@@ -6,20 +6,33 @@ import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useUser } from "@/contexts/UserContext";
 import { Truck, Shield, BarChart3, MessageSquare, Users, ChevronRight, Phone, Mail, MapPin } from "lucide-react";
+import { toast } from "sonner";
 
 const Landing = () => {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
+  const [isSignup, setIsSignup] = useState(false);
+  const [name, setName] = useState("");
   const navigate = useNavigate();
-  const { login } = useUser();
+  const { login, signup, loading } = useUser();
 
-  const handleLogin = async () => {
+  const handleSubmit = async () => {
     try {
-      await login(email, password);
-      navigate("/dashboard");
-    } catch (err) {
-      setError("Invalid credentials");
+      setError("");
+      
+      if (isSignup) {
+        await signup(email, password, name);
+        toast.success("Account created! Please check your email to confirm your account.");
+        setIsSignup(false);
+      } else {
+        await login(email, password);
+        navigate("/dashboard");
+        toast.success("Welcome back!");
+      }
+    } catch (err: any) {
+      setError(err.message || "An error occurred");
+      toast.error(err.message || "An error occurred");
     }
   };
 
@@ -90,7 +103,7 @@ const Landing = () => {
 
           {/* Action buttons moved below title and text */}
           <div className="flex flex-col sm:flex-row gap-3 lg:gap-4 animate-fade-in" style={{animationDelay: '0.4s'}}>
-            <Button size="lg" variant="gradient" onClick={handleLogin} className="hover-scale">
+            <Button size="lg" variant="gradient" className="hover-scale" onClick={() => setIsSignup(true)}>
               Start Free Trial
               <ChevronRight className="w-5 h-5" />
             </Button>
@@ -110,17 +123,35 @@ const Landing = () => {
           </div>
         </div>
 
-        {/* Right side - Login Panel */}
+        {/* Right side - Login/Signup Panel */}
         <div className="flex justify-center">
           <div className="w-full max-w-md">
             <Card className="border-0 shadow-xl">
               <CardContent className="p-6 space-y-4">
                 <div className="text-center mb-6">
-                  <h3 className="text-2xl font-bold mb-2">Sign In to WIT Ai</h3>
-                  <p className="text-muted-foreground">Access your logistics dashboard</p>
+                  <h3 className="text-2xl font-bold mb-2">
+                    {isSignup ? 'Create Account' : 'Sign In to WIT Ai'}
+                  </h3>
+                  <p className="text-muted-foreground">
+                    {isSignup ? 'Start your free trial today' : 'Access your logistics dashboard'}
+                  </p>
                 </div>
                 
                 <div className="space-y-4">
+                  {isSignup && (
+                    <div>
+                      <Label htmlFor="name">Full Name</Label>
+                      <Input
+                        id="name"
+                        type="text"
+                        placeholder="Enter your full name"
+                        value={name}
+                        onChange={(e) => setName(e.target.value)}
+                        className="mt-1"
+                      />
+                    </div>
+                  )}
+                  
                   <div>
                     <Label htmlFor="email">Email</Label>
                     <Input
@@ -150,16 +181,25 @@ const Landing = () => {
                   )}
                   
                   <Button 
-                    onClick={handleLogin} 
+                    onClick={handleSubmit}
                     className="w-full" 
                     size="lg"
+                    disabled={loading}
                   >
-                    Sign In
+                    {loading ? 'Loading...' : (isSignup ? 'Create Account' : 'Sign In')}
                   </Button>
-                </div>
-                
-                <div className="text-center text-sm text-muted-foreground">
-                  Don't have an account? <a href="#" className="text-primary hover:underline">Contact us</a>
+                  
+                  <div className="text-center">
+                    <button
+                      onClick={() => setIsSignup(!isSignup)}
+                      className="text-sm text-muted-foreground hover:text-primary transition-colors"
+                    >
+                      {isSignup 
+                        ? 'Already have an account? Sign in' 
+                        : "Don't have an account? Sign up"
+                      }
+                    </button>
+                  </div>
                 </div>
               </CardContent>
             </Card>
