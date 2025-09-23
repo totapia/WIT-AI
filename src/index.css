@@ -1,0 +1,215 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Professional Logistics Platform Design System */
+
+@layer base {
+  :root {
+    /* Background & Base */
+    --background: 220 15% 97%;
+    --foreground: 220 25% 8%;
+
+    /* Cards & Surfaces */
+    --card: 0 0% 100%;
+    --card-foreground: 220 25% 8%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 220 25% 8%;
+
+    /* Brand Colors - Professional Blue/Teal */
+    --primary: 200 95% 35%;
+    --primary-foreground: 0 0% 100%;
+    --primary-light: 200 85% 45%;
+    --primary-dark: 200 100% 25%;
+
+    /* Secondary - Complementary Orange/Amber */
+    --secondary: 35 85% 55%;
+    --secondary-foreground: 220 25% 8%;
+    --secondary-light: 35 80% 65%;
+
+    /* Success/Growth Green */
+    --success: 140 70% 45%;
+    --success-foreground: 0 0% 100%;
+    --success-light: 140 60% 55%;
+
+    /* Warning/Attention */
+    --warning: 25 85% 55%;
+    --warning-foreground: 220 25% 8%;
+
+    /* Danger/Critical */
+    --destructive: 0 75% 55%;
+    --destructive-foreground: 0 0% 100%;
+
+    /* Neutral Grays */
+    --muted: 220 10% 95%;
+    --muted-foreground: 220 15% 45%;
+    
+    --accent: 220 15% 92%;
+    --accent-foreground: 220 25% 8%;
+
+    /* Borders & Inputs */
+    --border: 220 15% 88%;
+    --input: 220 15% 88%;
+    --ring: 200 95% 35%;
+
+    /* Gradients */
+    --gradient-brand: linear-gradient(135deg, hsl(var(--primary)), hsl(var(--primary-light)));
+    --gradient-success: linear-gradient(135deg, hsl(var(--success)), hsl(var(--success-light)));
+    --gradient-bg: linear-gradient(180deg, hsl(var(--background)), hsl(220 10% 95%));
+
+    /* Shadows */
+    --shadow-soft: 0 2px 8px -2px hsl(var(--primary) / 0.1);
+    --shadow-medium: 0 4px 16px -4px hsl(var(--primary) / 0.15);
+    --shadow-strong: 0 8px 24px -8px hsl(var(--primary) / 0.2);
+
+    /* Animations */
+    --transition-smooth: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    --transition-spring: all 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+
+    --radius: 0.75rem;
+
+    --sidebar-background: 0 0% 98%;
+
+    --sidebar-foreground: 240 5.3% 26.1%;
+
+    --sidebar-primary: 240 5.9% 10%;
+
+    --sidebar-primary-foreground: 0 0% 98%;
+
+    --sidebar-accent: 240 4.8% 95.9%;
+
+    --sidebar-accent-foreground: 240 5.9% 10%;
+
+    --sidebar-border: 220 13% 91%;
+
+    --sidebar-ring: 217.2 91.2% 59.8%;
+  }
+
+  .dark {
+    /* Background & Base */
+    --background: 220 20% 8%;
+    --foreground: 220 10% 95%;
+
+    /* Cards & Surfaces */
+    --card: 220 15% 12%;
+    --card-foreground: 220 10% 95%;
+
+    --popover: 220 15% 12%;
+    --popover-foreground: 220 10% 95%;
+
+    /* Brand Colors - Adjusted for dark mode */
+    --primary: 200 90% 50%;
+    --primary-foreground: 220 20% 8%;
+    --primary-light: 200 85% 60%;
+    --primary-dark: 200 95% 40%;
+
+    /* Secondary */
+    --secondary: 35 80% 50%;
+    --secondary-foreground: 220 20% 8%;
+    --secondary-light: 35 75% 60%;
+
+    /* Success/Growth Green */
+    --success: 140 65% 50%;
+    --success-foreground: 220 20% 8%;
+    --success-light: 140 60% 60%;
+
+    /* Warning/Attention */
+    --warning: 25 80% 55%;
+    --warning-foreground: 220 20% 8%;
+
+    /* Danger/Critical */
+    --destructive: 0 70% 55%;
+    --destructive-foreground: 220 10% 95%;
+
+    /* Neutral Grays */
+    --muted: 220 15% 18%;
+    --muted-foreground: 220 10% 65%;
+    
+    --accent: 220 15% 20%;
+    --accent-foreground: 220 10% 95%;
+
+    /* Borders & Inputs */
+    --border: 220 15% 25%;
+    --input: 220 15% 25%;
+    --ring: 200 90% 50%;
+
+    /* Sidebar */
+    --sidebar-background: 220 20% 8%;
+    --sidebar-foreground: 220 10% 95%;
+    --sidebar-primary: 200 90% 50%;
+    --sidebar-primary-foreground: 220 20% 8%;
+    --sidebar-accent: 220 15% 18%;
+    --sidebar-accent-foreground: 220 10% 95%;
+    --sidebar-border: 220 15% 25%;
+    --sidebar-ring: 200 90% 50%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+  }
+}
+
+/* Animations and Transitions */
+.counter-animate {
+  animation: countUp 1s ease-out;
+}
+
+@keyframes countUp {
+  from { opacity: 0; transform: translateY(20px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.fade-in {
+  animation: fadeIn 0.5s ease-in-out;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes slideDown {
+  from { 
+    opacity: 0; 
+    transform: translateY(-20px); 
+  }
+  to { 
+    opacity: 1; 
+    transform: translateY(0); 
+  }
+}
+
+.animate-slide-down {
+  animation: slideDown 0.6s ease-out;
+}
+
+@keyframes messageSlideIn {
+  from {
+    opacity: 0;
+    transform: translateX(-20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.message-slide-in {
+  animation: messageSlideIn 0.3s ease-out;
+}
+
+@keyframes progressFill {
+  from { width: 0%; }
+  to { width: var(--progress-width, 100%); }
+}
+
+.progress-animate {
+  animation: progressFill 1.5s ease-out;
+}
