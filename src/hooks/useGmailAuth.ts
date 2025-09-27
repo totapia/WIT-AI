@@ -1,12 +1,6 @@
 import { useState, useEffect } from 'react';
 import { supabase } from '@/lib/supabase';
-
-interface EmailAccount {
-  id: string;
-  email: string;
-  provider: 'gmail' | 'outlook';
-  isConnected: boolean;
-}
+import { useUser } from '@/contexts/UserContext';
 
 interface GmailAuthResult {
   success: boolean;
@@ -15,20 +9,24 @@ interface GmailAuthResult {
 }
 
 export const useGmailAuth = () => {
+  const { user } = useUser();
   const [connectedAccounts, setConnectedAccounts] = useState<string[]>([]);
   const [isConnecting, setIsConnecting] = useState(false);
 
   // Load connected accounts on mount
   useEffect(() => {
-    loadConnectedAccounts();
-  }, []);
+    if (user) {
+      loadConnectedAccounts();
+    }
+  }, [user]);
 
   const loadConnectedAccounts = async () => {
     try {
       const { data, error } = await supabase
         .from('email_accounts')
         .select('email_address')
-        .eq('is_active', true);
+        .eq('is_active', true)
+        .eq('user_id', user?.id);
 
       if (error) {
         console.error('Error loading email accounts:', error);
@@ -53,7 +51,6 @@ export const useGmailAuth = () => {
         };
       }
 
-      // Initialize Google Identity Services
       const clientId = import.meta.env.VITE_GOOGLE_CLIENT_ID;
       
       if (!clientId) {
@@ -67,24 +64,22 @@ export const useGmailAuth = () => {
       const credential = await new Promise((resolve, reject) => {
         let isResolved = false;
         
-        // Set a timeout to handle popup cancellation
         const timeout = setTimeout(() => {
           if (!isResolved) {
             isResolved = true;
             reject(new Error('Connection cancelled or timed out'));
           }
-        }, 30000); // 30 second timeout (shorter for better UX)
+        }, 30000);
 
         const tokenClient = window.google.accounts.oauth2.initTokenClient({
           client_id: clientId,
-          scope: 'https://www.googleapis.com/auth/gmail.readonly',
+          scope: 'https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/userinfo.email',
           callback: (response: any) => {
             if (!isResolved) {
               isResolved = true;
               clearTimeout(timeout);
               
               if (response.error) {
-                // Handle specific error cases
                 if (response.error === 'popup_closed_by_user') {
                   reject(new Error('Connection cancelled'));
                 } else {
@@ -97,55 +92,115 @@ export const useGmailAuth = () => {
           },
         });
 
-        // Request access token (this opens the popup)
         tokenClient.requestAccessToken();
       });
 
-      // Get user info
-      const userInfo = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
-        headers: {
-          'Authorization': `Bearer ${(credential as any).access_token}`
-        }
-      });
+      console.log('Google OAuth response:', credential);
 
-      const userData = await userInfo.json();
+      // Validate the token first
+      if (!(credential as any).access_token) {
+        return {
+          success: false,
+          error: 'No access token received from Google'
+        };
+      }
+
+      // Get user info with better error handling
+      let userData;
+      try {
+        const userInfoResponse = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
+          headers: {
+            'Authorization': `Bearer ${(credential as any).access_token}`,
+            'Content-Type': 'application/json'
+          }
+        });
+
+        console.log('UserInfo response status:', userInfoResponse.status);
+
+        if (!userInfoResponse.ok) {
+          const errorText = await userInfoResponse.text();
+          console.error('UserInfo error response:', errorText);
+          
+          if (userInfoResponse.status === 401) {
+            return {
+              success: false,
+              error: 'Google authentication failed. Please try again or check if your Google account has the necessary permissions.'
+            };
+          }
+          
+          return {
+            success: false,
+            error: `Google API error: ${userInfoResponse.status} - ${errorText}`
+          };
+        }
+
+        userData = await userInfoResponse.json();
+        console.log('User data received:', userData);
+        
+      } catch (fetchError) {
+        console.error('Error fetching user info:', fetchError);
+        return {
+          success: false,
+          error: 'Failed to retrieve user information from Google. Please try again.'
+        };
+      }
       
       if (!userData.email) {
         return {
           success: false,
-          error: 'Could not retrieve email address'
+          error: 'Could not retrieve email address from Google account'
         };
       }
 
-      // Check if email already exists
-      const { data: existingAccount } = await supabase
+      // Check if email exists for ANY user (not just current user)
+      const { data: existingAccount, error: checkError } = await supabase
         .from('email_accounts')
-        .select('email_address')
+        .select('user_id, email_address, is_active')
         .eq('email_address', userData.email)
         .single();
 
-      if (existingAccount) {
-        // Update existing account
-        const { error } = await supabase
-          .from('email_accounts')
-          .update({
-            access_token: (credential as any).access_token,
-            is_active: true
-          })
-          .eq('email_address', userData.email);
+      if (checkError && checkError.code !== 'PGRST116') {
+        // PGRST116 is "no rows returned" which is fine
+        console.error('Error checking existing account:', checkError);
+        return {
+          success: false,
+          error: `Database error: ${checkError.message}`
+        };
+      }
 
-        if (error) {
-          console.error('Database error:', error);
+      if (existingAccount) {
+        // Email exists in database
+        if (existingAccount.user_id === user?.id) {
+          // Same user - update the token
+          const { error } = await supabase
+            .from('email_accounts')
+            .update({
+              access_token: (credential as any).access_token,
+              is_active: true
+            })
+            .eq('email_address', userData.email)
+            .eq('user_id', user?.id);
+
+          if (error) {
+            console.error('Database error updating account:', error);
+            return {
+              success: false,
+              error: `Failed to update account: ${error.message}`
+            };
+          }
+        } else {
+          // Different user - this email is already connected to another account
           return {
             success: false,
-            error: `Failed to update account: ${error.message}`
+            error: `This Gmail account (${userData.email}) is already connected to another user. Please use a different Gmail account or contact support.`
           };
         }
       } else {
-        // Insert new account
+        // Email doesn't exist - insert new account
         const { error } = await supabase
           .from('email_accounts')
           .insert({
+            user_id: user?.id,
             email_address: userData.email,
             provider: 'gmail',
             access_token: (credential as any).access_token,
@@ -153,7 +208,7 @@ export const useGmailAuth = () => {
           });
 
         if (error) {
-          console.error('Database error:', error);
+          console.error('Database error inserting account:', error);
           return {
             success: false,
             error: `Failed to save account: ${error.message}`
@@ -172,11 +227,11 @@ export const useGmailAuth = () => {
     } catch (error: any) {
       console.error('Gmail connection error:', error);
       
-      // Handle cancellation gracefully - don't show error message
+      // Handle cancellation gracefully
       if (error.message === 'Connection cancelled' || error.message === 'Connection cancelled or timed out') {
         return {
           success: false,
-          error: '' // Empty error means user cancelled, no need to show error
+          error: ''
         };
       }
       
@@ -185,17 +240,17 @@ export const useGmailAuth = () => {
         error: error.message || 'Failed to connect Gmail'
       };
     } finally {
-      setIsConnecting(false); // This will now always run
+      setIsConnecting(false);
     }
   };
 
   const disconnectGmail = async (email: string): Promise<GmailAuthResult> => {
     try {
-      // Update database
       const { error } = await supabase
         .from('email_accounts')
         .update({ is_active: false })
-        .eq('email_address', email);
+        .eq('email_address', email)
+        .eq('user_id', user?.id);
 
       if (error) {
         return {
@@ -204,7 +259,6 @@ export const useGmailAuth = () => {
         };
       }
 
-      // Update local state
       setConnectedAccounts(prev => prev.filter(e => e !== email));
       
       return { success: true };
@@ -225,7 +279,6 @@ export const useGmailAuth = () => {
   };
 };
 
-// Add Google types to window
 declare global {
   interface Window {
     google: any;

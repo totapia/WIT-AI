@@ -38,68 +38,60 @@ const rolePermissions = {
   agent: ['dashboard', 'call-dashboard', 'email-agent', 'training', 'directory']
 };
 
+// Role mapping by email
+const roleMapping = {
+  'admin@company.com': 'admin' as UserRole,
+  'agent@company.com': 'agent' as UserRole,
+  'manager@company.com': 'manager' as UserRole
+};
+
+// Helper function to create user profile from auth user
+const createUserProfile = (authUser: SupabaseUser): User => {
+  return {
+    id: authUser.id,
+    name: authUser.user_metadata?.full_name || authUser.email?.split('@')[0] || 'User',
+    email: authUser.email || '',
+    role: roleMapping[authUser.email as keyof typeof roleMapping] || 'agent'
+  };
+};
+
 export const UserProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);
   const [session, setSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(true);
 
-  // Get user profile from users_login table
-  const getUserProfile = async (userId: string): Promise<User | null> => {
-    try {
-      const { data, error } = await supabase
-        .from('users_login')
-        .select('id, email, full_name, role')
-        .eq('id', userId)
-        .single();
-
-      if (error) {
-        console.error('Error fetching user profile:', error);
-        return null;
-      }
-
-      return {
-        id: data.id,
-        name: data.full_name || data.email?.split('@')[0] || 'User',
-        email: data.email,
-        role: data.role || 'agent'
-      };
-    } catch (error) {
-      console.error('Error in getUserProfile:', error);
-      return null;
-    }
-  };
-
   const login = async (email: string, password: string) => {
     try {
+      console.log('UserContext: Starting login...');
       setLoading(true);
+      
+      // Authenticate with Supabase Auth
       const { data, error } = await supabase.auth.signInWithPassword({
         email,
-        password,
+        password
       });
 
       if (error) {
+        console.error('Supabase auth error:', error);
         throw new Error(error.message);
       }
 
-      if (data.user) {
-        const userProfile = await getUserProfile(data.user.id);
-        if (userProfile) {
-          setUser(userProfile);
-          setSession(data.session);
-        } else {
-          // If no profile exists, create a default one
-          const defaultUser: User = {
-            id: data.user.id,
-            name: data.user.email?.split('@')[0] || 'User',
-            email: data.user.email || '',
-            role: 'agent'
-          };
-          setUser(defaultUser);
-          setSession(data.session);
-        }
+      if (!data.user) {
+        throw new Error('No user data returned');
       }
+
+      console.log('Supabase auth successful, creating user profile...');
+
+      // Create user profile from auth data
+      const userProfile = createUserProfile(data.user);
+
+      setUser(userProfile);
+      setSession(data.session);
+      
+      console.log('UserContext: Login complete');
+      
     } catch (error) {
-      console.error('Login error:', error);
+      console.error('UserContext: Login error:', error);
       throw error;
     } finally {
       setLoading(false);
@@ -124,19 +116,6 @@ export const UserProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
 
       if (data.user) {
-        // Update the user record with the full_name and role
-        const { error: updateError } = await supabase
-          .from('users_login')
-          .update({
-            full_name: name,
-            role: 'agent' // Default role
-          })
-          .eq('id', data.user.id);
-
-        if (updateError) {
-          console.error('Error updating user profile:', updateError);
-        }
-
         // Note: User will need to confirm email before they can login
         throw new Error('Please check your email to confirm your account before signing in.');
       }
@@ -178,7 +157,8 @@ export const UserProvider: React.FC<{ children: React.ReactNode }> = ({ children
         setSession(session);
         
         if (session?.user) {
-          const userProfile = await getUserProfile(session.user.id);
+          // Create user profile directly from auth user - no database call
+          const userProfile = createUserProfile(session.user);
           setUser(userProfile);
         }
       } catch (error) {
@@ -196,7 +176,8 @@ export const UserProvider: React.FC<{ children: React.ReactNode }> = ({ children
         setSession(session);
         
         if (session?.user) {
-          const userProfile = await getUserProfile(session.user.id);
+          // Create user profile directly from auth user - no database call
+          const userProfile = createUserProfile(session.user);
           setUser(userProfile);
         } else {
           setUser(null);

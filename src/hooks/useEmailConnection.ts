@@ -1,13 +1,6 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect } from 'react';
 import { supabase } from '@/lib/supabase';
-
-interface EmailAccount {
-  id: string;
-  email_address: string;
-  provider: string;
-  access_token: string | null;
-  is_active: boolean;
-}
+import { useUser } from '@/contexts/UserContext';
 
 interface ConnectionStatus {
   isConnected: boolean;
@@ -15,15 +8,8 @@ interface ConnectionStatus {
   isValidToken: boolean;
 }
 
-// Global state to prevent multiple instances from making requests
-let globalConnectionCheck: Promise<ConnectionStatus> | null = null;
-let globalConnectionStatus: ConnectionStatus = {
-  isConnected: false,
-  email: null,
-  isValidToken: false
-};
-
 export const useEmailConnection = () => {
+  const { user } = useUser();
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>({
     isConnected: false,
     email: null,
@@ -31,9 +17,9 @@ export const useEmailConnection = () => {
   });
   const [isValidating, setIsValidating] = useState(false);
 
-  // Check email connection (simplified)
+  // Check email connection
   const checkEmailConnection = async () => {
-    if (isValidating) return; // Prevent multiple calls
+    if (isValidating || !user) return; // Prevent multiple calls and ensure user is logged in
     
     setIsValidating(true);
     
@@ -41,7 +27,9 @@ export const useEmailConnection = () => {
       const { data: accounts, error } = await supabase
         .from('email_accounts')
         .select('*')
-        .match({ is_active: true, provider: 'gmail' })
+        .eq('is_active', true)
+        .eq('provider', 'gmail')
+        .eq('user_id', user.id) // Use the current user's ID
         .limit(1);
 
       if (error) {
@@ -72,10 +60,12 @@ export const useEmailConnection = () => {
     }
   };
 
-  // Check connection on mount
+  // Check connection on mount and when user changes
   useEffect(() => {
-    checkEmailConnection();
-  }, []);
+    if (user) {
+      checkEmailConnection();
+    }
+  }, [user]);
 
   return {
     connectionStatus,

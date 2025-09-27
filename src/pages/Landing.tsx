@@ -14,25 +14,35 @@ const Landing = () => {
   const [error, setError] = useState("");
   const [isSignup, setIsSignup] = useState(false);
   const [name, setName] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false); // Add this
   const navigate = useNavigate();
   const { login, signup, loading } = useUser();
 
   const handleSubmit = async () => {
     try {
+      console.log('Starting login...', { email, password }); // Add this
       setError("");
+      setIsSubmitting(true);
       
       if (isSignup) {
+        console.log('Signing up...'); // Add this
         await signup(email, password, name);
         toast.success("Account created! Please check your email to confirm your account.");
         setIsSignup(false);
       } else {
+        console.log('Logging in...'); // Add this
         await login(email, password);
+        console.log('Login successful, navigating...'); // Add this
         navigate("/dashboard");
         toast.success("Welcome back!");
       }
     } catch (err: any) {
+      console.error('Login error:', err); // Add this
       setError(err.message || "An error occurred");
       toast.error(err.message || "An error occurred");
+    } finally {
+      console.log('Setting submitting to false'); // Add this
+      setIsSubmitting(false);
     }
   };
 
@@ -184,9 +194,9 @@ const Landing = () => {
                     onClick={handleSubmit}
                     className="w-full" 
                     size="lg"
-                    disabled={loading}
+                    disabled={isSubmitting} // Change this
                   >
-                    {loading ? 'Loading...' : (isSignup ? 'Create Account' : 'Sign In')}
+                    {isSubmitting ? 'Loading...' : (isSignup ? 'Create Account' : 'Sign In')} {/* Change this */}
                   </Button>
                   
                   <div className="text-center">

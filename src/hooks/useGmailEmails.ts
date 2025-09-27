@@ -5,6 +5,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Button } from '@/components/ui/button';
 import { Mail, Filter } from 'lucide-react';
 import { useEmailConnection } from './useEmailConnection';
+import { useUser } from '@/contexts/UserContext';
 
 export interface EmailMessage {
   id: string;
@@ -125,6 +126,7 @@ const extractLoadNumber = (text: string): string | undefined => {
 };
 
 export const useGmailEmails = () => {
+  const { user } = useUser(); // Add this line
   const [emails, setEmails] = useState<EmailMessage[]>([]);
   const [conversations, setConversations] = useState<EmailConversation[]>([]);
   const [loading, setLoading] = useState(false);
@@ -145,6 +147,7 @@ export const useGmailEmails = () => {
         .select('access_token, refresh_token, email_address')
         .eq('is_active', true)
         .eq('provider', 'gmail')
+        .eq('user_id', user?.id) // Add this line to filter by current user
         .single();
 
       if (accountError || !emailAccount) {
@@ -364,7 +367,13 @@ export const useGmailEmails = () => {
       });
 
       if (!sendResponse.ok) {
-        throw new Error('Failed to send reply');
+        const errorText = await sendResponse.text();
+        console.error('Gmail API Error:', {
+          status: sendResponse.status,
+          statusText: sendResponse.statusText,
+          error: errorText
+        });
+        throw new Error(`Failed to send reply: ${sendResponse.status} - ${errorText}`);
       }
 
       return true;

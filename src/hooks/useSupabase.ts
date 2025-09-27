@@ -26,6 +26,13 @@ export interface Call {
   notes: string | null;
   outcome: string | null;
   created_at: string;
+  // New Twilio fields
+  call_source?: string;
+  twilio_sid?: string;
+  recording_sid?: string;
+  recording_url?: string;
+  integration_config?: any;
+  external_call_id?: string;
 }
 
 export interface Shipment {
