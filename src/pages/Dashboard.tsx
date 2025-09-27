@@ -336,9 +336,9 @@ const Dashboard = () => {
                 </CardHeader>
                 <CardContent className="px-3">
                   <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
-                    <Button variant="outline" className="h-12 flex-col gap-1 text-xs" onClick={() => navigate("/call-dashboard")}>
-                      <PhoneCall className="w-3.5 h-3.5" />
-                      New Call
+                    <Button variant="outline" className="h-12 flex-col gap-1 text-xs" onClick={() => navigate("/make-call")}>
+                      <Phone className="h-4 w-4" />
+                      Make Call
                     </Button>
                     <Button variant="outline" className="h-12 flex-col gap-1 text-xs">
                       <Users className="w-3.5 h-3.5" />

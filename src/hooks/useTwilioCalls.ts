@@ -1,6 +1,5 @@
 import { useState, useEffect } from 'react';
 import { supabase } from '@/lib/supabase';
-import TwilioService from '@/lib/twilio';
 import { useUser } from '@/contexts/UserContext';
 
 export interface Call {
@@ -30,22 +29,16 @@ export const useTwilioCalls = () => {
   const [error, setError] = useState<string | null>(null);
   const { user } = useUser();
 
-  // Initialize Twilio service
-  const twilioService = new TwilioService({
-    accountSid: import.meta.env.VITE_TWILIO_ACCOUNT_SID || '',
-    authToken: import.meta.env.VITE_TWILIO_AUTH_TOKEN || '',
-    phoneNumber: import.meta.env.VITE_TWILIO_PHONE_NUMBER || '',
-    webhookUrl: import.meta.env.VITE_TWILIO_WEBHOOK_URL || '',
-  });
-
   // Fetch calls from database
   const fetchCalls = async () => {
+    if (!user?.id) return;
+    
     try {
       setLoading(true);
       const { data, error } = await supabase
         .from('calls')
         .select('*')
-        .eq('user_id', user?.id)
+        .eq('user_id', user.id)
         .order('created_at', { ascending: false });
 
       if (error) throw error;
@@ -57,38 +50,36 @@ export const useTwilioCalls = () => {
     }
   };
 
-  // Make a new call
-  const makeCall = async (clientId: string, phoneNumber: string) => {
+  // Make a new call via server API
+  const makeCall = async (phoneNumber: string, clientId: string) => {
+    if (!user?.id) throw new Error('User not authenticated');
+
     try {
       setLoading(true);
       
-      // Start the call via Twilio
-      const callSid = await twilioService.makeCall(phoneNumber, clientId);
-      
-      // Create call record in database
-      const { data: call, error } = await supabase
-        .from('calls')
-        .insert({
-          client_id: clientId,
-          user_id: user?.id,
-          call_type: 'outbound',
-          status: 'initiated',
-          call_source: 'twilio',
-          twilio_sid: callSid,
-          integration_config: {
-            phoneNumber,
-            startTime: new Date().toISOString()
-          }
-        })
-        .select()
-        .single();
+      const response = await fetch('http://localhost:3001/api/make-call', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          phoneNumber,
+          clientId,
+          userId: user.id,
+        }),
+      });
 
-      if (error) throw error;
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Failed to make call');
+      }
+
+      const result = await response.json();
       
       // Refresh calls list
       await fetchCalls();
       
-      return call;
+      return result;
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to make call');
       throw err;

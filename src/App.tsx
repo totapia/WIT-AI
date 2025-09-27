@@ -9,6 +9,7 @@ import { ProtectedRoute } from "@/components/ProtectedRoute";
 import Landing from "./pages/Landing";
 import Dashboard from "./pages/Dashboard";
 import Reports from "./pages/Reports";
+import MakeCall from "./pages/MakeCall";
 import CallDashboard from "./pages/CallDashboard";
 import EmailAgent from "./pages/EmailAgent";
 import Training from "./pages/Training";
@@ -35,6 +36,11 @@ const App = () => (
               <Route path="/reports" element={
                 <ProtectedRoute requiredPermission="reports">
                   <Reports />
+                </ProtectedRoute>
+              } />
+              <Route path="/make-call" element={
+                <ProtectedRoute requiredPermission="call-dashboard">
+                  <MakeCall />
                 </ProtectedRoute>
               } />
               <Route path="/call-dashboard" element={
