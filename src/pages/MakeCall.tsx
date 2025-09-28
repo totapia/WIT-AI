@@ -32,7 +32,7 @@ const MakeCall = () => {
       const phoneToCall = selectedClient ? phoneNumber : customPhoneNumber;
       const clientId = selectedClient || 'custom';
 
-      await makeCall(clientId, phoneToCall);
+      await makeCall(phoneToCall, clientId);
       
       toast.success('Call initiated successfully!');
       
@@ -58,13 +58,13 @@ const MakeCall = () => {
       <SidebarInset>
         <div className="flex flex-1 flex-col gap-4 p-4">
           <div className="flex items-center gap-4">
-            <Button variant="outline" size="sm" onClick={() => navigate('/dashboard')}>
+            <Button variant="outline" size="sm" onClick={() => navigate('/call-dashboard')}>
               <ArrowLeft className="h-4 w-4 mr-2" />
-              Back to Dashboard
+              Back to Live Call
             </Button>
             <div>
-              <h1 className="text-2xl font-bold">Make a Call</h1>
-              <p className="text-muted-foreground">Initiate a call to a client</p>
+              <h1 className="text-2xl font-bold">Make Call</h1>
+              <p className="text-muted-foreground">Initiate a new phone call to a client</p>
             </div>
           </div>
 

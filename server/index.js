@@ -28,23 +28,60 @@ const twilio = new Twilio(
   process.env.VITE_TWILIO_AUTH_TOKEN
 );
 
+// Add this test endpoint before the make-call endpoint
+app.get('/api/test', (req, res) => {
+  res.json({ 
+    message: 'Webhook server is running!', 
+    timestamp: new Date().toISOString(),
+    webhookUrl: `${process.env.VITE_TWILIO_WEBHOOK_URL}/api/twilio/voice`
+  });
+});
+
 // API endpoint to make calls
 app.post('/api/make-call', async (req, res) => {
   try {
     const { phoneNumber, clientId, userId } = req.body;
     
+    console.log('=== INCOMING REQUEST ===');
+    console.log('Request body:', req.body);
+    
     if (!phoneNumber || !clientId || !userId) {
+      console.log('❌ Missing required fields');
       return res.status(400).json({ error: 'Missing required fields: phoneNumber, clientId, userId' });
+    }
+
+    // Check environment variables
+    const requiredEnvVars = {
+      'VITE_TWILIO_ACCOUNT_SID': process.env.VITE_TWILIO_ACCOUNT_SID,
+      'VITE_TWILIO_AUTH_TOKEN': process.env.VITE_TWILIO_AUTH_TOKEN,
+      'VITE_TWILIO_PHONE_NUMBER': process.env.VITE_TWILIO_PHONE_NUMBER,
+      'VITE_TWILIO_WEBHOOK_URL': process.env.VITE_TWILIO_WEBHOOK_URL
+    };
+
+    console.log('=== ENVIRONMENT CHECK ===');
+    for (const [key, value] of Object.entries(requiredEnvVars)) {
+      if (!value) {
+        console.log(`❌ Missing environment variable: ${key}`);
+        return res.status(500).json({ error: `Missing environment variable: ${key}` });
+      } else {
+        console.log(`✅ ${key}: ${key.includes('TOKEN') ? '***' : value}`);
+      }
     }
 
     // Add comprehensive debugging
     const fromNumber = process.env.VITE_TWILIO_PHONE_NUMBER;
     console.log('=== CALL DEBUGGING ===');
     console.log('Environment from number:', fromNumber);
-    console.log('Twilio account SID:', process.env.VITE_TWILIO_ACCOUNT_SID);
     console.log('Call will be made FROM:', fromNumber, 'TO:', phoneNumber);
 
+    // Validate phone number format
+    if (!phoneNumber.match(/^\+?[1-9]\d{1,14}$/)) {
+      console.log('❌ Invalid phone number format:', phoneNumber);
+      return res.status(400).json({ error: 'Invalid phone number format' });
+    }
+
     // Make the call using Twilio
+    console.log('🔄 Attempting to create Twilio call...');
     const call = await twilio.calls.create({
       to: phoneNumber,
       from: fromNumber,
@@ -60,7 +97,7 @@ app.post('/api/make-call', async (req, res) => {
     const { data: callData, error: dbError } = await supabase
       .from('calls')
       .insert({
-        client_id: clientId,
+        client_id: clientId === 'custom' ? null : clientId,
         user_id: userId,
         call_type: 'outbound',
         status: 'initiated',
@@ -89,7 +126,31 @@ app.post('/api/make-call', async (req, res) => {
 
   } catch (error) {
     console.error('Error making call:', error);
-    res.status(500).json({ error: 'Failed to make call' });
+    
+    // Handle specific Twilio errors with user-friendly messages
+    if (error.code === 21219) {
+      return res.status(400).json({ 
+        error: 'Phone number not verified',
+        message: 'This phone number is not verified in your Twilio account. Trial accounts can only call verified numbers. Please verify this number in your Twilio console or upgrade to a paid account.',
+        code: error.code,
+        help: 'Go to Twilio Console → Phone Numbers → Manage → Verified Caller IDs'
+      });
+    }
+    
+    if (error.code === 21210) {
+      return res.status(400).json({ 
+        error: 'From number not verified',
+        message: 'The phone number you\'re calling from is not verified. Please verify it in your Twilio console.',
+        code: error.code,
+        help: 'Go to Twilio Console → Phone Numbers → Manage → Verified Caller IDs'
+      });
+    }
+    
+    res.status(500).json({ 
+      error: 'Failed to make call',
+      details: error.message,
+      code: error.code || 'UNKNOWN_ERROR'
+    });
   }
 });
 
@@ -129,6 +190,8 @@ app.post('/api/twilio/status', async (req, res) => {
 
 // Twilio webhook endpoint for voice instructions
 app.post('/api/twilio/voice', (req, res) => {
+  console.log('Voice webhook called:', req.body);
+  
   const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Say>Hello! This is a test call from your logistics AI system.</Say>
@@ -143,8 +206,16 @@ app.post('/api/twilio/voice', (req, res) => {
 
 // Twilio webhook endpoint for recording
 app.post('/api/twilio/recording', (req, res) => {
-  console.log('Recording received:', req.body);
-  res.send('OK');
+  console.log('Recording webhook called:', req.body);
+  
+  const twiml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say>Thank you for your message. We will get back to you soon.</Say>
+  <Hangup/>
+</Response>`;
+  
+  res.type('text/xml');
+  res.send(twiml);
 });
 
 app.listen(port, () => {
