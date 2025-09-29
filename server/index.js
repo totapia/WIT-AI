@@ -188,34 +188,176 @@ app.post('/api/twilio/status', async (req, res) => {
   }
 });
 
-// Twilio webhook endpoint for voice instructions
+// Replace the /api/twilio/voice endpoint with this:
 app.post('/api/twilio/voice', (req, res) => {
   console.log('Voice webhook called:', req.body);
   
+  // For outbound calls, dial with recording enabled
   const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Say>Hello! This is a test call from your logistics AI system.</Say>
-  <Pause length="2"/>
-  <Say>How can we help you with your logistics needs today?</Say>
-  <Record maxLength="300" action="/api/twilio/recording"/>
+  <Dial callerId="${process.env.VITE_TWILIO_PHONE_NUMBER}" record="record-from-answer" recordingStatusCallback="${process.env.VITE_TWILIO_WEBHOOK_URL}/api/twilio/recording">
+    ${req.body.To}
+  </Dial>
+</Response>`;
+
+  res.type('text/xml');
+  res.send(twiml);
+});
+
+// Replace the recording webhook with this:
+app.post('/api/twilio/recording', async (req, res) => {
+  console.log('Recording webhook called:', req.body);
+  
+  try {
+    const { RecordingSid, CallSid, RecordingUrl, RecordingDuration, RecordingStatus } = req.body;
+    
+    if (RecordingStatus === 'completed') {
+      // Store recording info in database
+      const { data, error } = await supabase
+        .from('call_recordings')
+        .insert({
+          call_sid: CallSid,
+          recording_sid: RecordingSid,
+          recording_url: RecordingUrl,
+          duration: RecordingDuration,
+          status: 'completed'
+        });
+      
+      if (error) {
+        console.error('Error storing recording:', error);
+      } else {
+        console.log('Recording stored successfully');
+        
+        // Trigger transcription (we'll implement this next)
+        await transcribeRecording(RecordingSid, CallSid);
+      }
+    }
+    
+    res.status(200).send('OK');
+  } catch (error) {
+    console.error('Error in recording webhook:', error);
+    res.status(500).send('Error');
+  }
+});
+
+// Add this function after the recording webhook:
+async function transcribeRecording(recordingSid, callSid) {
+  try {
+    console.log(`Starting transcription for recording ${recordingSid}`);
+    
+    // Use Twilio's built-in transcription
+    const transcription = await twilio.transcriptions.create({
+      recordingSid: recordingSid
+    });
+    
+    console.log('Transcription created:', transcription.sid);
+    
+    // Store transcription in database
+    const { error } = await supabase
+      .from('call_transcripts')
+      .insert({
+        call_sid: callSid,
+        recording_sid: recordingSid,
+        transcription_sid: transcription.sid,
+        status: 'processing'
+      });
+    
+    if (error) {
+      console.error('Error storing transcription:', error);
+    }
+    
+  } catch (error) {
+    console.error('Error creating transcription:', error);
+  }
+}
+
+// Replace the token endpoint with this API Key approach:
+app.post('/api/twilio/token', async (req, res) => {
+  try {
+    const { userId } = req.body;
+    
+    console.log('=== TOKEN GENERATION ===');
+    console.log('User ID:', userId);
+    console.log('App SID:', process.env.VITE_TWILIO_APP_SID);
+    console.log('Account SID:', process.env.VITE_TWILIO_ACCOUNT_SID);
+    console.log('API Key SID:', process.env.VITE_TWILIO_API_KEY_SID);
+    
+    // Manual JWT generation using jsonwebtoken
+    const jwt = await import('jsonwebtoken');
+    
+    const now = Math.floor(Date.now() / 1000);
+    const payload = {
+      jti: `${userId || 'user'}-${now}`,
+      grants: {
+        identity: userId || 'user',
+        voice: {
+          incoming: { allow: true },
+          outgoing: { application_sid: process.env.VITE_TWILIO_APP_SID }
+        }
+      },
+      iat: now,
+      exp: now + 3600, // 1 hour
+      iss: process.env.VITE_TWILIO_API_KEY_SID, // Use API Key SID as issuer
+      sub: process.env.VITE_TWILIO_ACCOUNT_SID
+    };
+
+    const token = jwt.default.sign(payload, process.env.VITE_TWILIO_AUTH_TOKEN, {
+      algorithm: 'HS256',
+      header: {
+        cty: 'twilio-fpa;v=1'
+      }
+    });
+
+    console.log('Generated JWT token successfully');
+    console.log('Token length:', token.length);
+    
+    res.json({ accessToken: token });
+  } catch (error) {
+    console.error('Error generating token:', error);
+    res.status(500).json({ error: 'Failed to generate token' });
+  }
+});
+
+app.post('/api/twilio/message', (req, res) => {
+  console.log('Message webhook received:', req.body);
+  
+  const twiml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Message>Thank you for your message. We'll get back to you soon!</Message>
 </Response>`;
   
   res.type('text/xml');
   res.send(twiml);
 });
 
-// Twilio webhook endpoint for recording
-app.post('/api/twilio/recording', (req, res) => {
-  console.log('Recording webhook called:', req.body);
+app.post('/api/twilio/transcription', async (req, res) => {
+  console.log('Transcription webhook called:', req.body);
   
-  const twiml = `<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Say>Thank you for your message. We will get back to you soon.</Say>
-  <Hangup/>
-</Response>`;
-  
-  res.type('text/xml');
-  res.send(twiml);
+  try {
+    const { TranscriptionSid, TranscriptionText, TranscriptionStatus } = req.body;
+    
+    if (TranscriptionStatus === 'completed') {
+      // Update transcription in database
+      const { error } = await supabase
+        .from('call_transcripts')
+        .update({
+          transcript_text: TranscriptionText,
+          status: 'completed'
+        })
+        .eq('transcription_sid', TranscriptionSid);
+      
+      if (error) {
+        console.error('Error updating transcription:', error);
+      } else {
+        console.log('Transcription completed and stored');
+      }
+    }
+    
+    res.status(200).send('OK');
+  } catch (error) {
+    console.error('Error in transcription webhook:', error);
+    res.status(500).send('Error');
+  }
 });
 
 app.listen(port, () => {

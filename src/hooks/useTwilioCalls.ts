@@ -120,6 +120,7 @@ export const useTwilioCalls = () => {
   return {
     calls,
     loading,
+    setLoading,
     error,
     makeCall,
     updateCallStatus,

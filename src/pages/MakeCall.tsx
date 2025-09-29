@@ -10,10 +10,12 @@ import { AppSidebar } from '@/components/AppSidebar';
 import { useTwilioCalls } from '@/hooks/useTwilioCalls';
 import { useClients } from '@/hooks/useSupabase';
 import { toast } from 'sonner';
+import { useTwilioVoice } from '@/hooks/useTwilioVoice';
+import { useUser } from '@/contexts/UserContext';
 
 const MakeCall = () => {
   const navigate = useNavigate();
-  const { makeCall, loading } = useTwilioCalls();
+  const { makeCall, loading, setLoading } = useTwilioCalls();
   const { clients } = useClients();
   
   const [selectedClient, setSelectedClient] = useState<string>('');
@@ -22,25 +24,49 @@ const MakeCall = () => {
 
   const selectedClientData = clients.find(c => c.id === selectedClient);
 
+  const { 
+    isConnected, 
+    isMuted, 
+    isOnHold, 
+    initializeDevice, 
+    makeCall: makeVoiceCall, 
+    muteCall, 
+    holdCall, 
+    hangupCall 
+  } = useTwilioVoice();
+
+  const { user } = useUser();
+
   const handleMakeCall = async () => {
     try {
-      if (!selectedClient && !customPhoneNumber) {
-        toast.error('Please select a client or enter a phone number');
-        return;
+      setLoading(true);
+      
+      // Get access token from server
+      const tokenResponse = await fetch('http://localhost:3001/api/twilio/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: user?.id })
+      });
+      
+      if (!tokenResponse.ok) {
+        throw new Error('Failed to get access token');
       }
-
+      
+      const { accessToken } = await tokenResponse.json();
+      
+      // Initialize Twilio Device
+      await initializeDevice(accessToken);
+      
+      // Make the voice call through browser
       const phoneToCall = selectedClient ? phoneNumber : customPhoneNumber;
-      const clientId = selectedClient || 'custom';
-
-      await makeCall(phoneToCall, clientId);
+      await makeVoiceCall(phoneToCall);
       
-      toast.success('Call initiated successfully!');
-      
-      // Navigate to call dashboard
-      navigate('/call-dashboard');
+      toast.success('Voice call initiated! You can now speak through your browser.');
     } catch (error) {
-      console.error('Error making call:', error);
-      toast.error('Failed to make call. Please try again.');
+      console.error('Error making voice call:', error);
+      toast.error('Failed to make voice call');
+    } finally {
+      setLoading(false);
     }
   };
 
