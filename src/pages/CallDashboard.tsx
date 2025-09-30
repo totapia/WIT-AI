@@ -68,40 +68,7 @@ const CallDashboard = () => {
   const [qaRecords, setQARecords] = useState<any[]>([]);
   const [callTranscripts, setCallTranscripts] = useState<any[]>([]);
 
-  // NEW: Fetch real data
-  useEffect(() => {
-    const fetchData = async () => {
-      if (!user?.id) return;
-      
-      try {
-        // Fetch clients
-        const { data: clientsData } = await supabase
-          .from('clients')
-          .select('*')
-          .eq('user_id', user.id);
-        
-        // Fetch Q&A records
-        const { data: qaData } = await supabase
-          .from('qa_knowledge_base')
-          .select('*')
-          .eq('created_by', user.id);
-        
-        setClients(clientsData || []);
-        setQARecords(qaData || []);
-        
-        // Auto-select first client
-        if (clientsData && clientsData.length > 0) {
-          setSelectedClient(clientsData[0]);
-        }
-      } catch (error) {
-        console.error('Error fetching data:', error);
-      }
-    };
-
-    fetchData();
-  }, [user?.id]);
-
-  // Add these state variables after the existing state (around line 52)
+  // Add this state variable after the existing state (around line 52)
   const [currentCall, setCurrentCall] = useState<any>(null);
   const [callStatus, setCallStatus] = useState<string>('idle');
   const [callStartTime, setCallStartTime] = useState<Date | null>(null);
@@ -216,7 +183,7 @@ const CallDashboard = () => {
 
 
 
-  const handleSendAiMessage = () => {
+  const handleSendAiMessage = async () => {
     if (aiChatInput.trim()) {
       const currentTime = new Date().toLocaleTimeString('en-US', { 
         hour12: false, 
@@ -224,7 +191,7 @@ const CallDashboard = () => {
         minute: '2-digit' 
       });
       
-      // Add the broker's message to the transcript
+      // Add the agent's message to the transcript
       const newMessage = {
         speaker: "agent",
         name: "You",
@@ -234,8 +201,24 @@ const CallDashboard = () => {
       
       setDisplayedTranscript(prev => [...prev, newMessage]);
       
+      // Save to database
+      if (currentCall?.id) {
+        try {
+          await supabase
+            .from('call_transcripts')
+            .insert({
+              call_id: currentCall.id,
+              speaker: 'agent',
+              message: aiChatInput.trim(),
+              timestamp: new Date().toISOString()
+            });
+        } catch (error) {
+          console.error('Error saving message:', error);
+        }
+      }
+      
       // Simulate AI response after a delay
-      setTimeout(() => {
+      setTimeout(async () => {
         const aiResponse = {
           speaker: "ai",
           name: "AI Assistant",
@@ -243,6 +226,22 @@ const CallDashboard = () => {
           message: "Thanks for your message! I'm analyzing the conversation and will provide insights based on what we've discussed so far."
         };
         setDisplayedTranscript(prev => [...prev, aiResponse]);
+        
+        // Save AI response to database
+        if (currentCall?.id) {
+          try {
+            await supabase
+              .from('call_transcripts')
+              .insert({
+                call_id: currentCall.id,
+                speaker: 'ai',
+                message: aiResponse.message,
+                timestamp: new Date().toISOString()
+              });
+          } catch (error) {
+            console.error('Error saving AI response:', error);
+          }
+        }
       }, 1000);
       
       setAiChatInput("");
@@ -567,8 +566,8 @@ const CallDashboard = () => {
                   </div>
                 </div>
               </CardContent>
-            </Card>
-          </div>
+              </Card>
+              </div>
 
           {/* Right Column - Client Intelligence & Q&A Side by Side */}
           <div className="col-span-1 lg:col-span-7 flex gap-3">
@@ -718,8 +717,8 @@ const CallDashboard = () => {
             </div>
           </div>
         </div>
-      </div>
-    </div>
+      </div>    
+    </div>  
     </SidebarInset>
   </div>
 );
