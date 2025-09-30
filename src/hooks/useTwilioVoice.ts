@@ -13,7 +13,7 @@ export const useTwilioVoice = () => {
   const initializeDevice = async (accessToken: string) => {
     try {
       const newDevice = new Device(accessToken, {
-        logLevel: 1,
+        logLevel: 0, // Changed from 1 to 0 to reduce logs
         codecPreferences: ['opus', 'pcmu'] as any
       });
 
