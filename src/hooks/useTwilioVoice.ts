@@ -9,27 +9,43 @@ export const useTwilioVoice = () => {
   const [isOnHold, setIsOnHold] = useState(false);
   const deviceRef = useRef<Device | null>(null);
 
+  // Enhanced debugging - CLEAN VERSION (reduced noise)
+  const logCallEvent = (event: string, details?: any) => {
+    const timestamp = new Date().toISOString();
+    console.log(`📞 [${timestamp}] ${event}`, details ? details : '');
+  };
+
+  const logStateChange = (state: string, value: any) => {
+    const timestamp = new Date().toISOString();
+    console.log(`🔄 [${timestamp}] ${state} =`, value);
+  };
+
   // Initialize Twilio Device
   const initializeDevice = async (accessToken: string) => {
     try {
+      logCallEvent('INIT: Device starting...');
+      
       const newDevice = new Device(accessToken, {
-        logLevel: 0, // Changed from 1 to 0 to reduce logs
+        logLevel: 0, // Set to 0 to suppress heartbeat messages
         codecPreferences: ['opus', 'pcmu'] as any
       });
 
       // Set up event listeners
       newDevice.on('registered', () => {
-        console.log('✅ Twilio Device registered');
+        logCallEvent('✅ Device registered');
         setIsConnected(true);
       });
 
       newDevice.on('error', (error) => {
-        console.error('❌ Twilio Device error:', error);
+        logCallEvent('❌ Device error:', error);
         setIsConnected(false);
       });
 
       newDevice.on('incoming', (incomingCall) => {
-        console.log('📞 Incoming call:', incomingCall);
+        logCallEvent('�� Incoming call:', { 
+          callSid: (incomingCall as any).sid || 'unknown',
+          from: (incomingCall as any).parameters?.From 
+        });
         setCall(incomingCall);
       });
 
@@ -38,16 +54,21 @@ export const useTwilioVoice = () => {
       deviceRef.current = newDevice;
 
       await newDevice.register();
+      logCallEvent('✅ Device registered successfully');
+      
     } catch (error) {
-      console.error('Failed to initialize Twilio Device:', error);
+      logCallEvent('❌ Device initialization failed:', error);
+      throw error;
     }
   };
 
   // Make an outbound call
   const makeCall = async (phoneNumber: string) => {
-    // Use deviceRef instead of device state to avoid timing issues
+    logCallEvent('📞 Making call to:', phoneNumber);
+    
     const currentDevice = deviceRef.current;
     if (!currentDevice) {
+      logCallEvent('❌ Device not initialized');
       throw new Error('Device not initialized');
     }
 
@@ -55,68 +76,98 @@ export const useTwilioVoice = () => {
       const newCall = await currentDevice.connect({
         params: {
           To: phoneNumber
-          // Remove the From parameter - let Twilio handle it
         }
       });
 
+      logCallEvent('✅ Call created:', { 
+        callSid: (newCall as any).sid || 'unknown',
+        to: phoneNumber
+      });
+      
       setCall(newCall);
       setupCallListeners(newCall);
+      
       return newCall;
     } catch (error) {
-      console.error('Failed to make call:', error);
+      logCallEvent('❌ Call failed:', error);
       throw error;
     }
   };
 
   // Set up call event listeners
   const setupCallListeners = (callInstance: any) => {
+    const callSid = callInstance?.sid || 'unknown';
+    logCallEvent('🔧 Setting up call listeners:', callSid);
+
     callInstance.on('accept', () => {
-      console.log('✅ Call accepted');
-      setIsConnected(true);
+      logCallEvent('✅ Call accepted');
     });
 
-    callInstance.on('disconnect', () => {
-      console.log('📞 Call disconnected');
+    callInstance.on('disconnect', (disconnectReason: any) => {
+      logCallEvent('📞 Call disconnected:', { 
+        callSid,
+        reason: disconnectReason 
+      });
       setCall(null);
-      setIsConnected(false);
       setIsMuted(false);
       setIsOnHold(false);
     });
 
     callInstance.on('cancel', () => {
-      console.log('❌ Call cancelled');
+      logCallEvent('❌ Call cancelled');
       setCall(null);
-      setIsConnected(false);
     });
 
     callInstance.on('reject', () => {
-      console.log('❌ Call rejected');
+      logCallEvent('❌ Call rejected');
       setCall(null);
-      setIsConnected(false);
+    });
+
+    callInstance.on('ringing', () => {
+      logCallEvent('�� Call ringing...');
+    });
+
+    callInstance.on('warning', (name: string, data: any) => {
+      logCallEvent('⚠️ Call warning:', { name, data });
+    });
+
+    callInstance.on('warning-cleared', (name: string) => {
+      logCallEvent('✅ Warning cleared:', name);
     });
   };
 
   // Call controls
   const muteCall = () => {
     if (call) {
-      call.mute(!isMuted);
-      setIsMuted(!isMuted);
+      const newMuteState = !isMuted;
+      logCallEvent('MUTE_TOGGLE', { 
+        callSid: (call as any).sid || 'unknown',
+        muted: newMuteState 
+      });
+      call.mute(newMuteState);
+      setIsMuted(newMuteState);
     }
   };
 
   const holdCall = () => {
     if (call) {
-      if (isOnHold) {
-        call.unhold();
-      } else {
+      const newHoldState = !isOnHold;
+      logCallEvent('HOLD_TOGGLE', { 
+        callSid: (call as any).sid || 'unknown',
+        onHold: newHoldState 
+      });
+      if (newHoldState) {
         call.hold();
+      } else {
+        call.unhold();
       }
-      setIsOnHold(!isOnHold);
+      setIsOnHold(newHoldState);
     }
   };
 
   const hangupCall = () => {
     if (call) {
+      logCallEvent('HANGUP_INITIATED', { callSid: (call as any).sid || 'unknown' });
       call.disconnect();
     }
   };
@@ -124,6 +175,7 @@ export const useTwilioVoice = () => {
   // Cleanup
   useEffect(() => {
     return () => {
+      logCallEvent('HOOK_CLEANUP');
       if (deviceRef.current) {
         deviceRef.current.destroy();
       }

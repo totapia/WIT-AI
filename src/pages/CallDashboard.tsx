@@ -43,11 +43,12 @@ import {
 import { useUser } from '@/contexts/UserContext';
 import { supabase } from '@/lib/supabase';
 import { useTwilioCalls } from '@/hooks/useTwilioCalls';
+import { useTwilioVoice } from '@/hooks/useTwilioVoice';
 
 const CallDashboard = () => {
   const navigate = useNavigate();
   const { user } = useUser();
-  const [isCallActive, setIsCallActive] = useState(false); // ← Change this to false
+  const [isCallActive, setIsCallActive] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
   const [callDuration, setCallDuration] = useState(0);
@@ -67,14 +68,107 @@ const CallDashboard = () => {
   const [selectedClient, setSelectedClient] = useState<any>(null);
   const [qaRecords, setQARecords] = useState<any[]>([]);
   const [callTranscripts, setCallTranscripts] = useState<any[]>([]);
+  const [customPhoneNumber, setCustomPhoneNumber] = useState('');
 
-  // Add this state variable after the existing state (around line 52)
+  // Call state
   const [currentCall, setCurrentCall] = useState<any>(null);
   const [callStatus, setCallStatus] = useState<string>('idle');
   const [callStartTime, setCallStartTime] = useState<Date | null>(null);
+  const [isInitiatingCall, setIsInitiatingCall] = useState(false);
 
   // Add this hook to get real-time call data
   const { calls, refreshCalls } = useTwilioCalls();
+  
+  // Add Twilio Voice SDK
+  const {
+    call,
+    isConnected,
+    isMuted: voiceMuted,
+    isOnHold,
+    initializeDevice,
+    makeCall: makeVoiceCall,
+    muteCall,
+    holdCall,
+    hangupCall
+  } = useTwilioVoice();
+
+  // Enhanced debugging - CLEAN VERSION (reduced noise)
+  const logUIEvent = (event: string, details?: any) => {
+    const timestamp = new Date().toISOString();
+    console.log(`��️ [${timestamp}] ${event}`, details ? details : '');
+  };
+
+  const logUIState = (state: string, value: any) => {
+    const timestamp = new Date().toISOString();
+    console.log(`📊 [${timestamp}] ${state} =`, value);
+  };
+
+  // Fetch clients and Q&A data
+  useEffect(() => {
+    const fetchData = async () => {
+      if (!user?.id) return;
+      
+      try {
+        // Fetch clients
+        const { data: clientsData } = await supabase
+          .from('clients')
+          .select('*')
+          .eq('user_id', user.id);
+        
+        if (clientsData) {
+          setClients(clientsData);
+        }
+        
+        // Fetch Q&A records
+        const { data: qaData } = await supabase
+          .from('qa_knowledge_base')
+          .select('*')
+          .eq('created_by', user.id);
+        
+        if (qaData) {
+          setQARecords(qaData);
+        }
+
+        // Fetch transcripts for current call
+        if (currentCall?.call_sid) {
+          const { data: transcriptData } = await supabase
+            .from('call_transcripts')
+            .select('*')
+            .eq('call_sid', currentCall.call_sid)
+            .order('created_at', { ascending: true });
+          
+          if (transcriptData) {
+            setCallTranscripts(transcriptData);
+            // Convert to display format
+            const formattedTranscripts = transcriptData.map(t => ({
+              speaker: t.speaker || 'customer',
+              name: t.speaker === 'agent' ? 'You' : t.speaker === 'ai' ? 'AI Assistant' : 'Customer',
+              time: new Date(t.timestamp || t.created_at).toLocaleTimeString('en-US', { 
+                hour12: false, 
+                hour: '2-digit', 
+                minute: '2-digit' 
+              }),
+              message: t.transcript_text || t.message || ''
+            }));
+            setDisplayedTranscript(formattedTranscripts);
+          }
+        }
+      } catch (error) {
+        console.error('Error fetching data:', error);
+      }
+    };
+
+    fetchData();
+    
+    // Refresh transcripts every 5 seconds during active call
+    const interval = setInterval(() => {
+      if (currentCall?.call_sid) {
+        fetchData();
+      }
+    }, 5000);
+
+    return () => clearInterval(interval);
+  }, [user?.id, currentCall?.call_sid]);
 
   // Replace the existing timer useEffect with this enhanced version
   useEffect(() => {
@@ -82,7 +176,7 @@ const CallDashboard = () => {
       if (callStartTime && callStatus === 'in-progress') {
         setCallDuration(prev => prev + 1);
       }
-    }, 1000);
+      }, 1000);
 
     return () => clearInterval(interval);
   }, [callStartTime, callStatus]);
@@ -100,14 +194,22 @@ const CallDashboard = () => {
   useEffect(() => {
     if (calls && calls.length > 0) {
       const latestCall = calls[0];
-      setCurrentCall(latestCall);
-      setCallStatus(latestCall.status || 'idle');
       
-      if (latestCall.status === 'in-progress' && !callStartTime) {
-        setCallStartTime(new Date());
+      // Only update call status from database if we don't have an active voice call
+      // This prevents database status from overriding local voice call status
+      if (!call) {
+        setCurrentCall(latestCall);
+        setCallStatus(latestCall.status || 'idle');
+        
+        if (latestCall.status === 'in-progress' && !callStartTime) {
+          setCallStartTime(new Date());
+        }
+      } else {
+        // We have an active voice call, only update currentCall but not callStatus
+        setCurrentCall(latestCall);
       }
     }
-  }, [calls, callStartTime]);
+  }, [calls, callStartTime, call]); // Add call to dependencies
 
   // Simulate progressive conversation
   useEffect(() => {
@@ -137,6 +239,41 @@ const CallDashboard = () => {
     
     return () => clearTimeout(timer);
   }, [isCallActive]);
+
+  // Reset call state when call object is cleared
+  useEffect(() => {
+    // Only log if we have meaningful state (not just initial load)
+    if (call || callStatus !== 'idle') {
+      logUIEvent('CALL_RESET_USEEFFECT_TRIGGERED', { 
+        hasCall: !!call,
+        callStatus,
+        callSid: (call as any)?.sid || 'unknown'
+      });
+    }
+
+    if (!call && (callStatus === 'in-progress' || callStatus === 'ringing')) {
+      // Call object was cleared (disconnected), reset UI after a delay
+      logUIEvent('CALL_RESET_SCHEDULED', { delay: 500 });
+      
+      const timer = setTimeout(() => {
+        logUIEvent('CALL_RESET_EXECUTED');
+        logUIState('callStatus', 'idle');
+        logUIState('callStartTime', null);
+        logUIState('callDuration', 0);
+        logUIState('currentCall', null);
+        
+        setCallStatus('idle');
+        setCallStartTime(null);
+        setCallDuration(0);
+        setCurrentCall(null);
+      }, 500);
+      
+      return () => {
+        logUIEvent('CALL_RESET_TIMER_CLEARED');
+        clearTimeout(timer);
+      };
+    }
+  }, [call, callStatus]);
 
   const formatTime = (seconds: number) => {
     const mins = Math.floor(seconds / 60);
@@ -255,6 +392,65 @@ const CallDashboard = () => {
     }
   };
 
+  const handleQuickCall = async () => {
+    if (isInitiatingCall) return; // Prevent duplicate calls
+    
+    try {
+      setIsInitiatingCall(true); // Set loading state
+      
+      // Get access token
+      const tokenResponse = await fetch('http://localhost:3001/api/twilio/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: user?.id })
+      });
+      
+      if (!tokenResponse.ok) {
+        throw new Error('Failed to get access token');
+      }
+      
+      const { accessToken } = await tokenResponse.json();
+      await initializeDevice(accessToken);
+      
+      // Set call status BEFORE making the call
+      setCallStatus('ringing');
+      setCurrentCall({ phoneNumber: customPhoneNumber });
+      
+      const call = await makeVoiceCall(customPhoneNumber);
+      logUIEvent('VOICE_CALL_CREATED', { callSid: (call as any)?.sid || 'unknown' });
+      setCustomPhoneNumber('');
+      
+      // Update status when call is accepted
+      call?.on('accept', () => {
+        logUIEvent('CALL_ACCEPTED_UI', { callSid: (call as any)?.sid || 'unknown' });
+        logUIState('callStatus', 'in-progress');
+        logUIState('callStartTime', new Date());
+        setCallStatus('in-progress');
+        setCallStartTime(new Date());
+      });
+
+      // Update status when call disconnects
+      call?.on('disconnect', (reason: any) => {
+        logUIEvent('CALL_DISCONNECTED_UI', { 
+          callSid: (call as any)?.sid || 'unknown',
+          reason: reason 
+        });
+        // Don't immediately reset callStatus - let the useEffect handle it with delay
+        setCallStartTime(null);
+        setCallDuration(0);
+        setCurrentCall(null);
+      });
+      
+    } catch (error) {
+      console.error('Error making call:', error);
+      // Reset state on error
+      setCallStatus('idle');
+      setCurrentCall(null);
+    } finally {
+      setIsInitiatingCall(false); // Reset loading state
+    }
+  };
+
   // Scroll management functions
   const scrollToBottom = () => {
     if (scrollAreaRef.current) {
@@ -338,6 +534,20 @@ const CallDashboard = () => {
       }
     };
   }, []);
+
+  // Add debugging to hangup button
+  const handleHangup = () => {
+    logUIEvent('HANGUP_BUTTON_CLICKED', { 
+      hasCall: !!call,
+      callSid: (call as any)?.sid || 'unknown',
+      currentCallStatus: callStatus 
+    });
+    
+    hangupCall();
+    setCallStatus('idle');
+    setCallStartTime(null);
+    setCallDuration(0);
+  };
 
   return (
     <div className="flex h-screen bg-gray-50">
@@ -443,9 +653,9 @@ const CallDashboard = () => {
 
           {/* Main Content */}
           <div className="min-h-screen bg-background animate-fade-in w-full">
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 p-3 h-[calc(100vh-60px)]">
+            <div className="grid grid-cols-1 lg:grid-cols-10 gap-3 p-3 h-[calc(100vh-60px)]">
               {/* Left Column - Live Transcript */}
-              <div className="col-span-1 lg:col-span-5">
+              <div className="col-span-1 lg:col-span-4">
               <Card className="border-0 shadow-lg h-[calc(100vh-80px)] flex flex-col">
                 <CardHeader className="pb-1.5 px-3 py-2 flex-shrink-0">
                   <CardTitle className="flex items-center gap-1.5 text-xs">
@@ -566,13 +776,11 @@ const CallDashboard = () => {
                   </div>
                 </div>
               </CardContent>
-              </Card>
-              </div>
+            </Card>
+          </div>
 
-          {/* Right Column - Client Intelligence & Q&A Side by Side */}
-          <div className="col-span-1 lg:col-span-7 flex gap-3">
-            {/* Client Intelligence Panel - Left */}
-            <div className="flex-1">
+          {/* Middle Column - Client Intelligence */}
+          <div className="col-span-1 lg:col-span-3">
               <Card className="border-0 shadow-lg h-[calc(100vh-80px)] flex flex-col">
                 <CardHeader className="pb-1.5 px-3 py-3 flex-shrink-0">
                   <CardTitle className="flex items-center gap-1.5 text-xs">
@@ -667,9 +875,164 @@ const CallDashboard = () => {
               </Card>
             </div>
 
-            {/* Smart Q&A Panel - Right */}
-            <div className="flex-1">
-              <Card className="border-0 shadow-lg h-[calc(100vh-80px)] flex flex-col">
+          {/* Right Column - Phone Controls & Q&A Stacked */}
+          <div className="col-span-1 lg:col-span-3 flex flex-col gap-3">
+            {/* Phone/Call Controls Panel - Top 50% */}
+            <div className="h-[calc((100vh-80px)/2-6px)]">
+              <Card className="border-0 shadow-lg h-full flex flex-col">
+                <CardHeader className="pb-1.5 px-3 py-2 flex-shrink-0">
+                  <CardTitle className="flex items-center gap-1.5 text-xs">
+                    <Phone className="w-3.5 h-3.5 text-primary" />
+                    Call Controls
+                    {callStatus === 'in-progress' && <Badge variant="default" className="ml-auto text-xs px-1.5 py-0">Active</Badge>}
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="p-3 flex-1 overflow-hidden flex flex-col">
+                  {/* Active Call Display */}
+                  {(callStatus === 'in-progress' || callStatus === 'ringing' || call) ? (
+                    <div className="space-y-3 flex-[2]">
+                      {/* Caller Info */}
+                      <div className="text-center space-y-2">
+                        <Avatar className="w-16 h-16 mx-auto">
+                          <AvatarFallback className="bg-primary text-primary-foreground text-lg">
+                            {currentCall?.phoneNumber?.slice(-4) || customPhoneNumber?.slice(-4) || '####'}
+                          </AvatarFallback>
+                        </Avatar>
+                        <div>
+                          <p className="font-semibold text-sm">{currentCall?.phoneNumber || customPhoneNumber || 'Unknown'}</p>
+                          <p className="text-xs text-muted-foreground">
+                            {callStatus === 'ringing' ? 'Ringing...' : callStatus === 'in-progress' ? 'Connected' : 'Disconnecting...'}
+                          </p>
+                        </div>
+                      </div>
+
+                      {/* Call Timer - only show during in-progress */}
+                      {callStatus === 'in-progress' && (
+                        <div className="text-center">
+                          <p className="text-2xl font-mono font-bold">{formatTime(callDuration)}</p>
+                        </div>
+                      )}
+
+                      {/* Call Controls */}
+                      <div className="grid grid-cols-3 gap-2">
+                        <Button
+                          variant={isMuted ? "default" : "outline"}
+                          size="sm"
+                          onClick={() => {
+                            muteCall();
+                            setIsMuted(!isMuted);
+                          }}
+                          className="flex flex-col items-center gap-1 h-auto py-2"
+                        >
+                          {isMuted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
+                          <span className="text-xs">{isMuted ? 'Unmute' : 'Mute'}</span>
+                        </Button>
+                        
+                        <Button
+                          variant={isPaused ? "default" : "outline"}
+                          size="sm"
+                          onClick={() => {
+                            holdCall();
+                            setIsPaused(!isPaused);
+                          }}
+                          className="flex flex-col items-center gap-1 h-auto py-2"
+                        >
+                          {isPaused ? <Play className="w-4 h-4" /> : <Pause className="w-4 h-4" />}
+                          <span className="text-xs">{isPaused ? 'Resume' : 'Hold'}</span>
+                        </Button>
+                        
+                        <Button
+                          variant="destructive"
+                          size="sm"
+                          onClick={handleHangup}
+                          className="flex flex-col items-center gap-1 h-auto py-2"
+                        >
+                          <PhoneOff className="w-4 h-4" />
+                          <span className="text-xs">End</span>
+                        </Button>
+                      </div>
+
+                      {/* Headphone Status */}
+                      <div className="flex items-center justify-center gap-2 text-xs text-muted-foreground">
+                        <CheckCircle className="w-3 h-3 text-green-500" />
+                        <span>Headphones Connected</span>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex-[2]">
+                      {/* No Active Call - Show Dialer */}
+                      <div className="space-y-3">
+                        <div className="text-center text-muted-foreground text-xs">
+                          <Phone className="w-8 h-8 mx-auto mb-2 opacity-50" />
+                          <p>No active call</p>
+                        </div>
+                        
+                        {/* Quick Dial Input */}
+                        <div className="space-y-2">
+                          <Input
+                            type="tel"
+                            placeholder="Enter phone number..."
+                            value={customPhoneNumber}
+                            onChange={(e) => setCustomPhoneNumber(e.target.value)}
+                            className="text-sm"
+                          />
+                          <Button 
+                            size="sm" 
+                            onClick={handleQuickCall}
+                            disabled={!customPhoneNumber.trim() || isInitiatingCall}
+                            className="w-full"
+                          >
+                            {isInitiatingCall ? (
+                              <svg className="animate-spin h-4 w-4 text-primary" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                              </svg>
+                            ) : (
+                              <>
+                                <Phone className="w-3 h-3 mr-1" />
+                                Call Now
+                              </>
+                            )}
+                          </Button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Recent Calls - Takes 1/3 of panel */}
+                  <Separator className="my-2" />
+                  <div className="space-y-2 flex-1 min-h-0">
+                    <h4 className="text-xs font-medium">Recent Calls</h4>
+                    <ScrollArea className="h-[calc(100%-24px)]">
+                      <div className="space-y-1">
+                        {calls?.map((call: any, index: number) => (
+                          <div 
+                            key={index} 
+                            className="flex items-center justify-between p-2 rounded hover:bg-accent cursor-pointer transition-colors"
+                            onClick={() => setCustomPhoneNumber(call.integration_config?.phoneNumber || call.to_number || '')}
+                          >
+                            <div className="flex items-center gap-2">
+                              <Phone className="w-3 h-3 text-muted-foreground" />
+                              <div>
+                                <p className="text-xs font-medium">{call.integration_config?.phoneNumber || call.to_number || 'Unknown'}</p>
+                                <p className="text-[10px] text-muted-foreground">{new Date(call.created_at).toLocaleTimeString()}</p>
+                              </div>
+                            </div>
+                            <Badge variant={call.status === 'completed' ? 'default' : 'secondary'} className="text-[10px] px-1.5 py-0">
+                              {call.duration || '0'}s
+                            </Badge>
+                          </div>
+                        ))}
+                      </div>
+                    </ScrollArea>
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+
+            {/* Smart Q&A Panel - Bottom 50% */}
+            <div className="h-[calc((100vh-80px)/2-6px)]">
+              <Card className="border-0 shadow-lg h-full flex flex-col">
                 <CardHeader className="pb-1.5 px-3 py-3 flex-shrink-0">
                   <CardTitle className="flex items-center gap-1.5 text-xs">
                     <Brain className="w-3.5 h-3.5 text-primary" />
@@ -716,12 +1079,12 @@ const CallDashboard = () => {
               </Card>
             </div>
           </div>
+        </div>  
         </div>
-      </div>    
-    </div>  
-    </SidebarInset>
-  </div>
-);
+        </div>
+      </SidebarInset>
+    </div>
+  );
 };
 
 export default CallDashboard;

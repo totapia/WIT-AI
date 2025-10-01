@@ -23,9 +23,9 @@ const supabase = createClient(
 
 // Twilio client - using destructuring for CommonJS compatibility
 const { Twilio } = pkg;
-const twilio = new Twilio(
+const twilio = pkg(
   process.env.VITE_TWILIO_ACCOUNT_SID,
-  process.env.VITE_TWILIO_AUTH_TOKEN
+  process.env.VITE_TWILIO_ACCOUNT_AUTH_TOKEN  // Use Account Auth Token for API calls
 );
 
 // Add this test endpoint before the make-call endpoint
@@ -97,7 +97,7 @@ app.post('/api/make-call', async (req, res) => {
     const { data: callData, error: dbError } = await supabase
       .from('calls')
       .insert({
-        client_id: clientId === 'custom' ? null : clientId,
+        client_id: (clientId === 'custom' || clientId === 'quick-call') ? null : clientId,
         user_id: userId,
         call_type: 'outbound',
         status: 'initiated',
@@ -188,20 +188,200 @@ app.post('/api/twilio/status', async (req, res) => {
   }
 });
 
-// Replace the /api/twilio/voice endpoint with this:
+// Replace the /api/twilio/voice endpoint with enhanced logging:
 app.post('/api/twilio/voice', (req, res) => {
-  console.log('Voice webhook called:', req.body);
+  console.log('=== VOICE WEBHOOK CALLED ===');
+  console.log('Request body:', req.body);
+  console.log('Timestamp:', new Date().toISOString());
   
-  // For outbound calls, dial with recording enabled
   const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Dial callerId="${process.env.VITE_TWILIO_PHONE_NUMBER}" record="record-from-answer" recordingStatusCallback="${process.env.VITE_TWILIO_WEBHOOK_URL}/api/twilio/recording">
+  <Dial callerId="${process.env.VITE_TWILIO_PHONE_NUMBER}" 
+        record="record-from-answer" 
+        recordingStatusCallback="${process.env.VITE_TWILIO_WEBHOOK_URL}/api/twilio/recording"
+        timeout="30"
+        hangupOnStar="true"
+        action="${process.env.VITE_TWILIO_WEBHOOK_URL}/api/twilio/dial-status"
+        method="POST"
+        machineDetection="DetectMessageEnd"
+        machineDetectionTimeout="30"
+        machineDetectionSpeechThreshold="2400"
+        machineDetectionSpeechEndThreshold="500"
+        machineDetectionSilenceTimeout="5000">
     ${req.body.To}
   </Dial>
 </Response>`;
 
+  console.log('Generated TwiML:', twiml);
+  console.log('=== END VOICE WEBHOOK ===');
+  
   res.type('text/xml');
   res.send(twiml);
+});
+
+// Enhanced dial status webhook with detailed step tracking
+app.post('/api/twilio/dial-status', async (req, res) => {
+  console.log('=== DIAL STATUS WEBHOOK CALLED ===');
+  console.log('Full request body:', JSON.stringify(req.body, null, 2));
+  console.log('Timestamp:', new Date().toISOString());
+  
+  try {
+    const { 
+      CallSid, 
+      DialCallStatus, 
+      DialCallDuration,
+      AnsweredBy,
+      MachineDetectionResult,
+      CallStatus,
+      From,
+      To,
+      Direction
+    } = req.body;
+    
+    // Detailed logging for each step
+    console.log('=== CALL ANALYSIS ===');
+    console.log(`Call SID: ${CallSid}`);
+    console.log(`Dial Status: ${DialCallStatus}`);
+    console.log(`Call Duration: ${DialCallDuration} seconds`);
+    console.log(`Answered By: ${AnsweredBy}`);
+    console.log(`Machine Detection: ${MachineDetectionResult}`);
+    console.log(`Call Status: ${CallStatus}`);
+    console.log(`From: ${From} -> To: ${To}`);
+    console.log(`Direction: ${Direction}`);
+    
+    let finalStatus = 'completed';
+    let isVoicemail = false;
+    let detectionMethod = 'unknown';
+    let confidence = 0;
+    
+    // Step-by-step detection logic with detailed logging
+    console.log('=== DETECTION PROCESS ===');
+    
+    if (AnsweredBy === 'machine') {
+      finalStatus = 'voicemail';
+      isVoicemail = true;
+      detectionMethod = 'twilio-ml';
+      confidence = 95;
+      console.log('✅ DETECTED: VOICEMAIL (Twilio ML) - Confidence: 95%');
+    } else if (AnsweredBy === 'human') {
+      finalStatus = 'answered-human';
+      detectionMethod = 'twilio-ml';
+      confidence = 95;
+      console.log('✅ DETECTED: HUMAN ANSWER (Twilio ML) - Confidence: 95%');
+    } else if (MachineDetectionResult === 'machine') {
+      finalStatus = 'voicemail';
+      isVoicemail = true;
+      detectionMethod = 'twilio-machine-detection';
+      confidence = 80;
+      console.log('✅ DETECTED: VOICEMAIL (Machine Detection) - Confidence: 80%');
+    } else if (MachineDetectionResult === 'human') {
+      finalStatus = 'answered-human';
+      detectionMethod = 'twilio-machine-detection';
+      confidence = 80;
+      console.log('✅ DETECTED: HUMAN ANSWER (Machine Detection) - Confidence: 80%');
+    } else if (DialCallStatus === 'no-answer') {
+      finalStatus = 'no-answer';
+      detectionMethod = 'timeout';
+      confidence = 100;
+      console.log(`⏰ DETECTED: NO ANSWER (30-second timeout reached) - Confidence: 100%`);
+    } else if (DialCallStatus === 'busy') {
+      finalStatus = 'busy';
+      detectionMethod = 'busy-signal';
+      confidence = 100;
+      console.log('📞 DETECTED: BUSY SIGNAL - Confidence: 100%');
+    } else if (DialCallStatus === 'failed') {
+      finalStatus = 'failed';
+      detectionMethod = 'connection-failed';
+      confidence = 100;
+      console.log('❌ DETECTED: CALL FAILED - Confidence: 100%');
+    } else if (DialCallStatus === 'completed') {
+      // Fallback analysis for completed calls without ML detection
+      if (DialCallDuration > 45 && DialCallDuration < 120) {
+        finalStatus = 'voicemail-likely';
+        isVoicemail = true;
+        detectionMethod = 'duration-pattern';
+        confidence = 60;
+        console.log(`🤔 DETECTED: LIKELY VOICEMAIL (Duration: ${DialCallDuration}s) - Confidence: 60%`);
+      } else if (DialCallDuration < 10) {
+        finalStatus = 'answered-brief';
+        detectionMethod = 'duration-pattern';
+        confidence = 70;
+        console.log(`👤 DETECTED: BRIEF HUMAN ANSWER (Duration: ${DialCallDuration}s) - Confidence: 70%`);
+      } else {
+        finalStatus = 'completed-unknown';
+        detectionMethod = 'duration-fallback';
+        confidence = 30;
+        console.log(`❓ DETECTED: UNKNOWN (Duration: ${DialCallDuration}s) - Confidence: 30%`);
+      }
+    } else {
+      finalStatus = DialCallStatus;
+      detectionMethod = 'raw-status';
+      confidence = 50;
+      console.log(`📋 DETECTED: RAW STATUS (${DialCallStatus}) - Confidence: 50%`);
+    }
+    
+    console.log('=== FINAL DETECTION RESULT ===');
+    console.log(`Status: ${finalStatus}`);
+    console.log(`Is Voicemail: ${isVoicemail}`);
+    console.log(`Method: ${detectionMethod}`);
+    console.log(`Confidence: ${confidence}%`);
+    
+    // Enhanced database update with detailed metadata
+    const metadata = {
+      is_voicemail: isVoicemail,
+      detection_method: detectionMethod,
+      confidence_score: confidence,
+      answered_by: AnsweredBy,
+      machine_detection_result: MachineDetectionResult,
+      dial_duration: DialCallDuration,
+      dial_status: DialCallStatus,
+      call_status: CallStatus,
+      detection_timestamp: new Date().toISOString(),
+      ml_available: !!AnsweredBy,
+      timeout_reached: DialCallStatus === 'no-answer'
+    };
+    
+    const { error } = await supabase
+      .from('calls')
+      .update({ 
+        status: finalStatus,
+        duration_minutes: Math.round((DialCallDuration || 0) / 60),
+        metadata: metadata
+      })
+      .eq('twilio_sid', CallSid);
+    
+    if (error) {
+      console.error('❌ DATABASE UPDATE ERROR:', error);
+    } else {
+      console.log(`✅ DATABASE UPDATED: Call ${CallSid} marked as ${finalStatus}`);
+    }
+    
+    // Log call termination
+    console.log('=== CALL TERMINATION ===');
+    console.log('Sending Hangup TwiML to prevent retries...');
+    
+    const twiml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Hangup/>
+</Response>`;
+    
+    console.log('=== DIAL STATUS WEBHOOK COMPLETE ===');
+    
+    res.type('text/xml');
+    res.send(twiml);
+    
+  } catch (error) {
+    console.error('❌ ERROR IN DIAL STATUS WEBHOOK:', error);
+    
+    // Still end the call even if there's an error
+    const twiml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Hangup/>
+</Response>`;
+    
+    res.type('text/xml');
+    res.send(twiml);
+  }
 });
 
 // Replace the recording webhook with this:
@@ -245,12 +425,12 @@ async function transcribeRecording(recordingSid, callSid) {
   try {
     console.log(`Starting transcription for recording ${recordingSid}`);
     
-    // Use Twilio's built-in transcription
-    const transcription = await twilio.transcriptions.create({
-      recordingSid: recordingSid
-    });
+    // Use the correct Twilio API for transcriptions
+    const recording = await twilio.recordings(recordingSid)
+      .transcriptions
+      .create();
     
-    console.log('Transcription created:', transcription.sid);
+    console.log('Transcription created:', recording.sid);
     
     // Store transcription in database
     const { error } = await supabase
@@ -258,7 +438,7 @@ async function transcribeRecording(recordingSid, callSid) {
       .insert({
         call_sid: callSid,
         recording_sid: recordingSid,
-        transcription_sid: transcription.sid,
+        transcription_sid: recording.sid,
         status: 'processing'
       });
     
@@ -281,6 +461,8 @@ app.post('/api/twilio/token', async (req, res) => {
     console.log('App SID:', process.env.VITE_TWILIO_APP_SID);
     console.log('Account SID:', process.env.VITE_TWILIO_ACCOUNT_SID);
     console.log('API Key SID:', process.env.VITE_TWILIO_API_KEY_SID);
+    console.log('API Key Secret exists:', !!process.env.VITE_TWILIO_API_KEY_SECRET); // NEW
+    console.log('API Key Secret length:', process.env.VITE_TWILIO_API_KEY_SECRET?.length); // NEW
     
     // Manual JWT generation using jsonwebtoken
     const jwt = await import('jsonwebtoken');
@@ -297,11 +479,11 @@ app.post('/api/twilio/token', async (req, res) => {
       },
       iat: now,
       exp: now + 3600, // 1 hour
-      iss: process.env.VITE_TWILIO_API_KEY_SID, // Use API Key SID as issuer
+      iss: process.env.VITE_TWILIO_API_KEY_SID,
       sub: process.env.VITE_TWILIO_ACCOUNT_SID
     };
 
-    const token = jwt.default.sign(payload, process.env.VITE_TWILIO_AUTH_TOKEN, {
+    const token = jwt.default.sign(payload, process.env.VITE_TWILIO_API_KEY_SECRET, {
       algorithm: 'HS256',
       header: {
         cty: 'twilio-fpa;v=1'
