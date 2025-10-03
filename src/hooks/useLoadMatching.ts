@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { supabase } from '@/lib/supabase';
+import { useUser } from '@/contexts/UserContext';
 
 export interface Load {
   id: string; // UUID from database
@@ -63,29 +64,39 @@ export const useLoadMatching = () => {
   const [loads, setLoads] = useState<Load[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const { user } = useUser();
 
   // Fetch loads from Supabase
   const fetchLoads = async () => {
+    if (!user) {
+      console.log('🔍 No user for fetchLoads');
+      setError('User not authenticated');
+      return;
+    }
+
     try {
       setLoading(true);
+      console.log('🔍 Fetching loads for user:', user.id);
+      
       const { data, error } = await supabase
         .from('loads')
         .select('*')
-        .eq('status', 'posted')
+        .eq('user_id', user.id)
         .order('created_at', { ascending: false });
 
       if (error) throw error;
       
-      // Just set the data directly - no transformation needed
+      console.log('🔍 Fetched loads:', data?.length || 0);
       setLoads(data || []);
     } catch (error: any) {
+      console.error('❌ Error fetching loads:', error);
       setError(error.message);
     } finally {
       setLoading(false);
     }
   };
 
-  // Update the matchEmailToLoads function to be more strict about load number matching
+  // Update the matchEmailToLoads function to use the correct property name
   const matchEmailToLoads = (emailContent: string, subject: string): LoadMatch[] => {
     const matches: LoadMatch[] = [];
     const combinedText = `${subject} ${emailContent}`.toLowerCase();
@@ -96,7 +107,10 @@ export const useLoadMatching = () => {
       let matchType: 'exact' | 'partial' | 'contextual' = 'contextual';
 
       // 1. Exact Load Number match (highest confidence) - ONLY match if load number is found
-      const loadNumberPattern = new RegExp(`\\b${load.load_number.toLowerCase()}\\b`, 'g');
+      const trimmedLoadNumber = load.load_number?.trim(); // Use load_number (snake_case)
+      if (!trimmedLoadNumber) return; // Skip if no load number
+      
+      const loadNumberPattern = new RegExp(trimmedLoadNumber.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
       const hasLoadNumber = loadNumberPattern.test(combinedText);
       
       if (hasLoadNumber) {
@@ -138,7 +152,7 @@ export const useLoadMatching = () => {
 
         // Only include matches with load number found
         matches.push({
-          loadId: load.load_number,
+          loadId: load.load_number, // Use load_number (snake_case)
           confidence,
           matchType,
           matchedFields,
@@ -159,8 +173,10 @@ export const useLoadMatching = () => {
   };
 
   useEffect(() => {
-    fetchLoads();
-  }, []);
+    if (user) {
+      fetchLoads();
+    }
+  }, [user]);
 
   return {
     loads,

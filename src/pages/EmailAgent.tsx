@@ -31,6 +31,7 @@ import {
   LogOut
 } from 'lucide-react';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { useUser } from '@/contexts/UserContext';
 
 export default function EmailAgent() {
   const [selectedLoad, setSelectedLoad] = useState<string | null>(null);
@@ -41,27 +42,57 @@ export default function EmailAgent() {
   // Add a state for showing the add form
   const [showAddForm, setShowAddForm] = useState(false);
   const [editingLoad, setEditingLoad] = useState<any>(null);
-  const [emailTimeframe, setEmailTimeframe] = useState<30 | 60 | 90>(30);
 
   // Use the load matching hook
   const { loads, loading: loadsLoading, fetchLoads } = useLoadMatching();
   
   // Use the Gmail emails hook
-  const { emails, conversations: gmailConversations, loading: emailsLoading, error: emailsError, refetch: fetchEmails, sendEmailReply } = useGmailEmails();
+  const { 
+    emails, 
+    conversations, 
+    loading, 
+    error, 
+    emailTimeframe,        
+    setEmailTimeframe,     
+    refetch, 
+    sendEmailReply 
+  } = useGmailEmails();
+
+  // When timeframe changes, refetch with new days
+  const handleTimeframeChange = (newTimeframe: 30 | 60 | 90) => {
+    setEmailTimeframe(newTimeframe);
+    refetch(newTimeframe); // Pass the new timeframe
+  };
+
+  // When fetch button is clicked, use current timeframe
+  const handleFetchEmails = () => {
+    refetch(emailTimeframe); // Use current timeframe
+  };
 
   // Use email connection status
   const { connectionStatus } = useEmailConnection();
 
+  const { user } = useUser();
+
   // Memoize the filtered conversations to prevent infinite re-renders
   const filteredConversations = useMemo(() => {
-    if (!selectedLoad) return [];
+    console.log('🔍 Selected load:', selectedLoad);
+    console.log('🔍 All conversations:', conversations.length);
+    console.log(' First conversation loadNumber:', conversations[0]?.loadNumber);
     
-    return gmailConversations.filter(conv => {
-      // Check if the conversation's loadNumber matches the selected load_number
+    // Show all conversations if no load is selected, or filter by selected load
+    if (!selectedLoad) {
+      return conversations.filter(conv => 
+        showFiltered ? filteredThreads.has(conv.threadId) : !filteredThreads.has(conv.threadId)
+      );
+    }
+    
+    return conversations.filter(conv => {
       const matches = conv.loadNumber === selectedLoad;
+      console.log('🔍 Conversation loadNumber:', conv.loadNumber, 'matches:', matches);
       return matches;
     }).filter(conv => showFiltered ? filteredThreads.has(conv.threadId) : !filteredThreads.has(conv.threadId));
-  }, [selectedLoad, gmailConversations, showFiltered, filteredThreads]);
+  }, [selectedLoad, conversations, showFiltered, filteredThreads]);
 
   // Update the handleLoadSelect function
   const handleLoadSelect = (loadNumber: string) => {
@@ -97,6 +128,19 @@ export default function EmailAgent() {
   // Handle adding a new load
   const handleLoadAdded = async (load: any) => {
     console.log('🔍 Adding load:', load);
+    console.log('🔍 Current user:', user);
+    console.log('🔍 User ID:', user?.id);
+    
+    // Check for duplicate load number first
+    const existingLoad = loads.find(existingLoad => 
+      existingLoad.load_number?.toLowerCase().trim() === load.id?.toLowerCase().trim()
+    );
+    
+    if (existingLoad) {
+      console.error('❌ Load number already exists:', load.id);
+      alert(`Load number "${load.id}" already exists. Please use a different load number.`);
+      return;
+    }
     
     // Format the load data to match your actual database schema
     const formattedLoad = {
@@ -110,7 +154,8 @@ export default function EmailAgent() {
       product_type: load.product || null,
       equipment_type: load.equipment || null,
       rate: load.rate || null,
-      status: 'posted'
+      status: 'posted',
+      user_id: user?.id // Add this line
     };
 
     try {
@@ -132,6 +177,12 @@ export default function EmailAgent() {
       fetchLoads();
     } catch (error: any) {
       console.error('❌ Error adding load:', error);
+      // Show user-friendly error message
+      if (error.code === '23505') { // PostgreSQL unique constraint violation
+        alert(`Load number "${load.id}" already exists. Please use a different load number.`);
+      } else {
+        alert(`Error adding load: ${error.message}`);
+      }
     }
   };
 
@@ -186,12 +237,12 @@ export default function EmailAgent() {
     if (!selectedConversation || !replyText.trim()) return;
 
     try {
-      const conversation = gmailConversations.find(conv => conv.threadId === selectedConversation);
+      const conversation = conversations.find(conv => conv.threadId === selectedConversation);
       if (!conversation) return;
 
       await sendEmailReply(conversation.threadId, replyText);
       setReplyText('');
-      fetchEmails(); // Refresh emails
+      refetch(emailTimeframe); // Refresh emails
     } catch (error) {
       console.error('Error sending reply:', error);
     }
@@ -333,7 +384,7 @@ export default function EmailAgent() {
               <div className="flex items-center justify-between">
                 <h2 className="text-lg font-semibold text-gray-900">Email Threads</h2>
                 <div className="flex items-center space-x-2">
-                  <Select value={emailTimeframe.toString()} onValueChange={(value) => setEmailTimeframe(Number(value) as 30 | 60 | 90)}>
+                  <Select value={emailTimeframe.toString()} onValueChange={(value) => handleTimeframeChange(Number(value) as 30 | 60 | 90)}>
                     <SelectTrigger className="h-7 w-16 text-xs">
                       <SelectValue />
                     </SelectTrigger>
@@ -346,22 +397,12 @@ export default function EmailAgent() {
                   <Button
                     size="sm"
                     variant="outline"
-                    onClick={() => {
-                      console.log('🔍 Fetch button clicked!');
-                      console.log('🔍 emailTimeframe:', emailTimeframe);
-                      console.log('🔍 fetchEmails function:', typeof fetchEmails);
-                      try {
-                        fetchEmails(emailTimeframe);
-                        console.log('✅ fetchEmails called successfully');
-                      } catch (error) {
-                        console.error('❌ Error calling fetchEmails:', error);
-                      }
-                    }}
-                    disabled={emailsLoading}
+                    onClick={handleFetchEmails}
+                    disabled={loading}
                     className="h-7 px-2 text-xs"
                   >
                     <Mail className="h-3 w-3 mr-1" />
-                    {emailsLoading ? 'Loading...' : 'Fetch'}
+                    {loading ? 'Loading...' : 'Refresh'}
                   </Button>
                   <Button
                     size="sm"
@@ -380,7 +421,7 @@ export default function EmailAgent() {
               <div className="space-y-2 p-4">
                 {filteredConversations.length === 0 && selectedLoad ? (
                   <div className="text-center text-gray-500 text-sm py-8">
-                    Press "Fetch" to load emails
+                    Press "Refresh" to load emails
                   </div>
                 ) : !selectedLoad ? (
                   <div className="text-center text-gray-500 text-sm py-8">
@@ -449,28 +490,46 @@ export default function EmailAgent() {
                 <ScrollArea className="flex-1 p-4">
                   <div className="space-y-4">
                     {(() => {
-                      const conversation = gmailConversations.find(conv => conv.threadId === selectedConversation);
+                      const conversation = conversations.find(conv => conv.threadId === selectedConversation);
                       if (!conversation) return null;
                       
-                      return conversation.emails.map((message, index) => (
-                        <div key={message.id} className={`flex ${message.sender.includes('workintandemai@gmail.com') ? 'justify-end' : 'justify-start'}`}>
-                          <div className={`max-w-[70%] p-3 rounded-lg ${
-                            message.sender.includes('workintandemai@gmail.com')
-                              ? 'bg-blue-500 text-white'
-                              : 'bg-gray-100 text-gray-900'
-                          }`}>
-                            <div className="text-xs opacity-70 mb-1">
-                              {message.sender.includes('workintandemai@gmail.com') ? 'You' : message.sender}
-                            </div>
-                            <div className="text-sm whitespace-pre-wrap">
-                              {message.body}
-                            </div>
-                            <div className="text-xs opacity-70 mt-1">
-                              {new Date(message.receivedAt).toLocaleString()}
+                      // Sort emails by date (oldest first) for proper conversation flow
+                      const sortedEmails = [...conversation.emails].sort((a, b) => 
+                        new Date(a.receivedAt).getTime() - new Date(b.receivedAt).getTime()
+                      );
+                      
+                      return sortedEmails.map((message, index) => {
+                        // Better sender detection - check if it's the current user
+                        const isCurrentUser = message.sender === user?.email || 
+                                             message.sender.includes('workintandemai@gmail.com') ||
+                                             message.createdByUser;
+                        
+                        return (
+                          <div key={message.id} className={`flex ${isCurrentUser ? 'justify-end' : 'justify-start'}`}>
+                            <div className={`max-w-[70%] p-3 rounded-lg ${
+                              isCurrentUser
+                                ? 'bg-blue-500 text-white'
+                                : 'bg-gray-100 text-gray-900'
+                            }`}>
+                              <div className="text-xs opacity-70 mb-1">
+                                {isCurrentUser ? 'You' : message.sender}
+                              </div>
+                              <div className="text-sm whitespace-pre-wrap">
+                                {message.body}
+                              </div>
+                              <div className="text-xs opacity-70 mt-1">
+                                {new Date(message.receivedAt).toLocaleString()}
+                              </div>
+                              {/* Show sync status for pending emails */}
+                              {message.syncStatus === 'pending' && (
+                                <div className="text-xs opacity-50 mt-1 italic">
+                                  Sending...
+                                </div>
+                              )}
                             </div>
                           </div>
-                        </div>
-                      ));
+                        );
+                      });
                     })()}
                   </div>
                 </ScrollArea>

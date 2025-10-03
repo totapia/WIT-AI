@@ -1,10 +1,6 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { supabase } from '@/lib/supabase';
 import { useLoadMatching, LoadMatch } from './useLoadMatching';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Button } from '@/components/ui/button';
-import { Mail, Filter } from 'lucide-react';
-import { useEmailConnection } from './useEmailConnection';
 import { useUser } from '@/contexts/UserContext';
 
 export interface EmailMessage {
@@ -17,6 +13,9 @@ export interface EmailMessage {
   loadNumber?: string;
   threadId: string;
   loadMatch?: LoadMatch;
+  syncStatus?: 'synced' | 'pending' | 'failed';
+  createdByUser?: boolean;
+  gmailMessageId?: string;
 }
 
 export interface EmailConversation {
@@ -31,364 +30,589 @@ export interface EmailConversation {
   lastTime: Date;
 }
 
-// Helper function to clean email body and extract only new content
+// Optimized helper functions
 const cleanEmailBody = (body: string): string => {
   if (!body) return '';
   
-  let cleanBody = body;
+  const textOnly = body.replace(/<[^>]*>/g, '');
+  const lines = textOnly.split('\n');
   
-  // Remove HTML tags
-  cleanBody = cleanBody.replace(/<[^>]*>/g, '');
+  return lines
+    .map(line => line.trim())
+    .filter(line => 
+      line && 
+      !line.startsWith('>') && 
+      !line.startsWith('On ') &&
+      !line.startsWith('From:') &&
+      !line.startsWith('Sent:') &&
+      !line.startsWith('To:') &&
+      !line.startsWith('Subject:') &&
+      !line.includes('-----Original Message-----') &&
+      !line.includes('________________________________') &&
+      !line.includes('This email was sent from') &&
+      !line.includes('Please do not reply to this email')
+    )
+    .join(' ')
+    .trim();
+};
+
+const extractLoadNumber = (content: string, loads: any[]): { loadNumber?: string; match?: LoadMatch } => {
+  if (!content || !loads.length) return {};
   
-  // Remove URLs
-  cleanBody = cleanBody.replace(/https?:\/\/[^\s]+/g, '');
+  const cleanContent = content.toLowerCase();
   
-  // Remove image placeholders
-  cleanBody = cleanBody.replace(/\[image\]|\[img\]|\[picture\]/gi, '');
-  
-  // Split into lines for better processing
-  const lines = cleanBody.split('\n');
-  const newContentLines: string[] = [];
-  let foundQuoteStart = false;
-  
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i].trim();
+  for (const load of loads) {
+    const loadNumber = load.load_number?.toLowerCase().trim();
+    if (!loadNumber) continue;
     
-    // Check for common quote patterns
-    if (isQuoteLine(line)) {
-      foundQuoteStart = true;
-      continue;
+    // Check for exact match first (most common)
+    if (cleanContent.includes(loadNumber)) {
+      return {
+        loadNumber: load.load_number,
+        match: {
+          loadId: load.id,
+          confidence: 1.0,
+          matchType: 'exact',
+          matchedFields: ['subject', 'body'],
+          load: load
+        }
+      };
     }
     
-    // If we found a quote, skip the rest
-    if (foundQuoteStart) {
-      continue;
-    }
-    
-    // Add non-empty lines
-    if (line) {
-      newContentLines.push(line);
+    // Check for partial match (no spaces)
+    const loadNumberNoSpaces = loadNumber.replace(/\s+/g, '');
+    if (cleanContent.includes(loadNumberNoSpaces)) {
+      return {
+        loadNumber: load.load_number,
+        match: {
+          loadId: load.id,
+          confidence: 0.9,
+          matchType: 'partial',
+          matchedFields: ['subject', 'body'],
+          load: load
+        }
+      };
     }
   }
   
-  // If no new content was found, return the original cleaned body (fallback)
-  const result = newContentLines.length > 0 
-    ? newContentLines.join(' ').trim()
-    : cleanBody.trim();
-    
-  return result || '';
-};
-
-// Helper function to detect quote lines
-const isQuoteLine = (line: string): boolean => {
-  const quotePatterns = [
-    /^On .* wrote:$/,
-    /^From:.*$/,
-    /^Sent:.*$/,
-    /^To:.*$/,
-    /^Subject:.*$/,
-    /^Date:.*$/,
-    /^-----Original Message-----/,
-    /^From:.*<.*>$/,
-    /^Sent:.*<.*>$/,
-    /^To:.*<.*>$/,
-    /^On .* at .* <.*> wrote:$/,
-    /^On .* PM .* wrote:$/,
-    /^On .* AM .* wrote:$/,
-    /^.*<.*> wrote:$/,
-  ];
-  
-  return quotePatterns.some(pattern => pattern.test(line));
-};
-
-// Helper function to extract load number from text
-const extractLoadNumber = (text: string): string | undefined => {
-  const loadNumberPatterns = [
-    /\b(LN\d{4,})\b/gi, // Specific pattern for LN followed by digits
-    /\b([A-Z]{2,3}\d{4,})\b/gi, // General pattern like LN0012345
-    /load\s*#?\s*(LN\d{4,})/gi,
-    /ln\s*#?\s*(LN\d{4,})/gi,
-    /shipment\s*#?\s*(LN\d{4,})/gi,
-    /quote\s*#?\s*(LN\d{4,})/gi,
-    /order\s*#?\s*(LN\d{4,})/gi,
-    /pro\s*#?\s*(LN\d{4,})/gi,
-    /bol\s*#?\s*(LN\d{4,})/gi,
-  ];
-  
-  for (const pattern of loadNumberPatterns) {
-    const match = pattern.exec(text);
-    if (match && match[1]) {
-      return match[1].toUpperCase();
-    }
-  }
-  
-  return undefined;
+  return {};
 };
 
 export const useGmailEmails = () => {
-  const { user } = useUser(); // Add this line
+  const { user } = useUser();
   const [emails, setEmails] = useState<EmailMessage[]>([]);
   const [conversations, setConversations] = useState<EmailConversation[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [emailTimeframe, setEmailTimeframe] = useState<30 | 60 | 90>(30);
+  const [emailTimeframe, setEmailTimeframe] = useState(30);
 
-  const { loads, getBestMatch } = useLoadMatching();
-  const { checkEmailConnection } = useEmailConnection();
+  // Memoized conversation grouping
+  const groupIntoConversations = useCallback((emails: EmailMessage[]): EmailConversation[] => {
+    const conversationMap = new Map<string, EmailConversation>();
 
-  const fetchEmails = async (days: number = 30) => {
-    setLoading(true);
-    setError(null);
+    emails.forEach(email => {
+      if (!email.threadId) return;
 
+      if (!conversationMap.has(email.threadId)) {
+        conversationMap.set(email.threadId, {
+          threadId: email.threadId,
+          subject: email.subject,
+          participants: [email.sender, email.recipient].filter(Boolean),
+          emails: [email],
+          lastMessage: email,
+          messageCount: 1,
+          lastTime: new Date(email.receivedAt),
+          loadNumber: email.loadNumber || null,
+          loadMatch: email.loadMatch
+        });
+      } else {
+        const conversation = conversationMap.get(email.threadId)!;
+        conversation.emails.push(email);
+        conversation.messageCount++;
+        
+        // Update participants efficiently
+        if (!conversation.participants.includes(email.sender)) {
+          conversation.participants.push(email.sender);
+        }
+        if (!conversation.participants.includes(email.recipient)) {
+          conversation.participants.push(email.recipient);
+        }
+        
+        // Update last message and time
+        const emailDate = new Date(email.receivedAt);
+        if (emailDate > conversation.lastTime) {
+          conversation.lastMessage = email;
+          conversation.lastTime = emailDate;
+        }
+        
+        // Update load number if needed
+        if (email.loadNumber && !conversation.loadNumber) {
+          conversation.loadNumber = email.loadNumber;
+          conversation.loadMatch = email.loadMatch;
+        }
+      }
+    });
+
+    return Array.from(conversationMap.values()).sort((a, b) => 
+      b.lastTime.getTime() - a.lastTime.getTime()
+    );
+  }, []);
+
+  // Optimized cache loading
+  const loadFromCache = useCallback(async (days: number = emailTimeframe) => {
+    const cutoffDate = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+    
+    const { data: cachedEmails, error } = await supabase
+      .from('email_cache')
+      .select('*')
+      .eq('user_id', user?.id)
+      .gte('received_at', cutoffDate.toISOString())
+      .order('received_at', { ascending: false });
+
+    if (error) {
+      console.error('❌ Error loading from cache:', error);
+      return;
+    }
+
+    const emails: EmailMessage[] = (cachedEmails || []).map(cacheEmail => ({
+      id: cacheEmail.message_id,
+      threadId: cacheEmail.thread_id,
+      subject: cacheEmail.subject,
+      sender: cacheEmail.sender,
+      recipient: cacheEmail.recipient,
+      body: cacheEmail.body,
+      receivedAt: cacheEmail.received_at,
+      loadNumber: cacheEmail.load_number || null,
+      loadMatch: cacheEmail.load_match,
+      syncStatus: cacheEmail.sync_status,
+      createdByUser: cacheEmail.created_by_user,
+      gmailMessageId: cacheEmail.gmail_message_id
+    }));
+
+    setEmails(emails);
+    setConversations(groupIntoConversations(emails));
+  }, [user?.id, emailTimeframe, groupIntoConversations]);
+
+  // Cache validation and fixing
+  const validateAndFixCache = useCallback(async () => {
+    const { data: cachedEmails, error } = await supabase
+      .from('email_cache')
+      .select('*')
+      .eq('user_id', user?.id)
+      .is('load_number', null);
+
+    if (error || !cachedEmails?.length) return;
+
+    const { data: currentLoads } = await supabase
+      .from('loads')
+      .select('id, load_number')
+      .eq('user_id', user?.id);
+
+    if (!currentLoads) return;
+
+    // Batch process emails
+    const updates = [];
+    const deletions = [];
+
+    for (const email of cachedEmails) {
+      const extractedLoad = extractLoadNumber(email.body + ' ' + email.subject, currentLoads);
+      
+      if (extractedLoad.loadNumber) {
+        updates.push({
+          message_id: email.message_id,
+          load_number: extractedLoad.loadNumber,
+          load_match: extractedLoad.match
+        });
+      } else {
+        const isSystemEmail = email.subject?.toLowerCase().includes('twilio') || 
+                             email.subject?.toLowerCase().includes('verification') ||
+                             email.sender?.includes('noreply') ||
+                             email.sender?.includes('no-reply');
+        
+        if (!isSystemEmail) {
+          deletions.push(email.message_id);
+        }
+      }
+    }
+
+    // Batch update
+    if (updates.length > 0) {
+      for (const update of updates) {
+        await supabase
+          .from('email_cache')
+          .update({ 
+            load_number: update.load_number,
+            load_match: update.load_match
+          })
+          .eq('message_id', update.message_id)
+          .eq('user_id', user?.id);
+      }
+    }
+
+    // Batch delete
+    if (deletions.length > 0) {
+      await supabase
+        .from('email_cache')
+        .delete()
+        .in('message_id', deletions)
+        .eq('user_id', user?.id);
+    }
+  }, [user?.id]);
+
+  // Optimized email processing
+  const processGmailMessage = useCallback(async (message: any, currentLoads: any[]): Promise<EmailMessage | null> => {
     try {
-      // Get the connected email account with refresh token
+      const headers = message.payload?.headers || [];
+      const subject = headers.find((h: any) => h.name === 'Subject')?.value || '';
+      const sender = headers.find((h: any) => h.name === 'From')?.value || '';
+      const recipient = headers.find((h: any) => h.name === 'To')?.value || '';
+      const date = headers.find((h: any) => h.name === 'Date')?.value || '';
+
+      // Extract body efficiently
+      let body = '';
+      if (message.payload?.body?.data) {
+        body = atob(message.payload.body.data.replace(/-/g, '+').replace(/_/g, '/'));
+      } else if (message.payload?.parts) {
+        for (const part of message.payload.parts) {
+          if (part.mimeType === 'text/plain' && part.body?.data) {
+            body = atob(part.body.data.replace(/-/g, '+').replace(/_/g, '/'));
+            break;
+          }
+        }
+      }
+
+      const cleanBody = cleanEmailBody(body);
+      const loadMatch = extractLoadNumber(cleanBody + ' ' + subject, currentLoads);
+      
+      if (!loadMatch.loadNumber) return null;
+
+      return {
+        id: message.id,
+        threadId: message.threadId,
+        subject,
+        sender,
+        recipient,
+        body,
+        receivedAt: new Date(date).toISOString(),
+        loadNumber: loadMatch.loadNumber,
+        loadMatch: loadMatch.match,
+        syncStatus: 'synced',
+        createdByUser: false,
+        gmailMessageId: message.id
+      };
+    } catch (error) {
+      console.error('❌ Error processing Gmail message:', error);
+      return null;
+    }
+  }, []);
+
+  // Optimistic email sending
+  const sendEmailReplyOptimistic = useCallback(async (threadId: string, replyText: string) => {
+    try {
+      const conversation = conversations.find(c => c.threadId === threadId);
+      if (!conversation) throw new Error('Conversation not found');
+
+      const now = new Date();
+      const optimisticEmail: EmailMessage = {
+        id: `temp_${Date.now()}`,
+        threadId,
+        subject: conversation.subject.startsWith('Re:') ? conversation.subject : `Re: ${conversation.subject}`,
+        sender: user?.email || 'unknown@example.com',
+        recipient: conversation.participants.find(p => p !== user?.email) || 'unknown@example.com',
+        body: replyText,
+        receivedAt: now.toISOString(),
+        loadNumber: conversation.loadNumber,
+        loadMatch: conversation.loadMatch,
+        syncStatus: 'pending',
+        createdByUser: true,
+        gmailMessageId: null
+      };
+
+      // Store in cache and operations in parallel
+      const [cacheResult, operationResult] = await Promise.allSettled([
+        supabase.from('email_cache').insert({
+          user_id: user?.id,
+          message_id: optimisticEmail.id,
+          thread_id: threadId,
+          subject: optimisticEmail.subject,
+          sender: optimisticEmail.sender,
+          recipient: optimisticEmail.recipient,
+          body: optimisticEmail.body,
+          received_at: optimisticEmail.receivedAt,
+          load_number: optimisticEmail.loadNumber,
+          load_match: optimisticEmail.loadMatch,
+          sync_status: 'pending',
+          created_by_user: true,
+          gmail_message_id: null
+        }),
+        supabase.from('email_operations').insert({
+          user_id: user?.id,
+          operation_type: 'send',
+          email_data: { threadId, replyText, optimisticEmail },
+          status: 'pending'
+        })
+      ]);
+
+      if (cacheResult.status === 'rejected') {
+        throw cacheResult.reason;
+      }
+
+      // Update UI immediately
+      const updatedEmails = [...emails, optimisticEmail];
+      setEmails(updatedEmails);
+      setConversations(groupIntoConversations(updatedEmails));
+      
+      return optimisticEmail;
+    } catch (error: any) {
+      console.error('❌ Error in optimistic email send:', error);
+      throw error;
+    }
+  }, [conversations, emails, user?.id, user?.email, groupIntoConversations]);
+
+  // Background sync for pending operations
+  const syncPendingOperations = useCallback(async () => {
+    try {
+      const { data: pendingOps, error } = await supabase
+        .from('email_operations')
+        .select('*')
+        .eq('user_id', user?.id)
+        .eq('status', 'pending')
+        .order('created_at', { ascending: true });
+
+      if (error || !pendingOps?.length) return;
+
       const { data: emailAccount, error: accountError } = await supabase
         .from('email_accounts')
         .select('access_token, refresh_token, email_address')
         .eq('is_active', true)
         .eq('provider', 'gmail')
-        .eq('user_id', user?.id) // Add this line to filter by current user
+        .eq('user_id', user?.id)
+        .single();
+
+      if (accountError || !emailAccount) return;
+
+      // Process each pending operation
+      for (const operation of pendingOps) {
+        try {
+          if (operation.operation_type === 'send') {
+            await syncSendOperation(operation, emailAccount);
+          }
+        } catch (error) {
+          console.error(`❌ Error syncing operation ${operation.id}:`, error);
+          
+          await supabase
+            .from('email_operations')
+            .update({ 
+              retry_count: (operation.retry_count || 0) + 1,
+              status: (operation.retry_count || 0) >= 3 ? 'failed' : 'pending'
+            })
+            .eq('id', operation.id);
+        }
+      }
+    } catch (error) {
+      console.error('❌ Error in background sync:', error);
+    }
+  }, [user?.id]);
+
+  // Sync send operation to Gmail
+  const syncSendOperation = useCallback(async (operation: any, emailAccount: any) => {
+    const { email_data } = operation;
+    const { threadId, replyText } = email_data;
+
+    const message = [
+      `To: ${email_data.optimisticEmail.recipient}`,
+      `Subject: ${email_data.optimisticEmail.subject}`,
+      '',
+      replyText
+    ].join('\n');
+
+    const encodedMessage = btoa(message).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+
+    const sendResponse = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/send`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${emailAccount.access_token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        raw: encodedMessage,
+        threadId: threadId
+      })
+    });
+
+    if (!sendResponse.ok) {
+      throw new Error(`Gmail API error: ${sendResponse.status}`);
+    }
+
+    const result = await sendResponse.json();
+    const gmailMessageId = result.id;
+
+    // Update cache with Gmail message ID
+    await supabase
+      .from('email_cache')
+      .update({
+        gmail_message_id: gmailMessageId,
+        sync_status: 'synced'
+      })
+      .eq('message_id', email_data.optimisticEmail.id);
+
+    // Mark operation as completed
+    await supabase
+      .from('email_operations')
+      .update({ status: 'sent' })
+      .eq('id', operation.id);
+  }, []);
+
+  // Add full email sync from Gmail
+  const performFullSync = useCallback(async (days: number = emailTimeframe) => {
+    try {
+      const { data: emailAccount, error: accountError } = await supabase
+        .from('email_accounts')
+        .select('access_token, refresh_token, email_address')
+        .eq('is_active', true)
+        .eq('provider', 'gmail')
+        .eq('user_id', user?.id)
         .single();
 
       if (accountError || !emailAccount) {
         throw new Error('No connected Gmail account found');
       }
 
-      // Fetch recent email threads
-      const response = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/threads?q=in:inbox newer_than:${days}d&maxResults=50`, {
-        headers: {
-          'Authorization': `Bearer ${emailAccount.access_token}`,
-          'Content-Type': 'application/json',
-        },
-      });
+      // Get current loads for matching
+      const { data: currentLoads } = await supabase
+        .from('loads')
+        .select('id, load_number')
+        .eq('user_id', user?.id);
 
-      if (!response.ok) {
-        if (response.status === 401) {
-          // Token is expired/invalid, mark as inactive
-          await supabase
-            .from('email_accounts')
-            .update({ is_active: false })
-            .eq('email_address', emailAccount.email_address);
-          
-          // Re-check the connection status to update the UI
-          await checkEmailConnection();
-          
-          throw new Error('Your Gmail connection has expired. Please reconnect your email account.');
-        }
-        throw new Error(`Gmail API error: ${response.status}`);
-      }
+      if (!currentLoads?.length) return;
 
-      const threadsData = await response.json();
+      // Search for emails containing load numbers
+      const loadNumbers = currentLoads.map(load => load.load_number).filter(Boolean);
+      const searchQueries = loadNumbers.map(loadNumber => 
+        `"${loadNumber}" newer_than:${days}d`
+      );
 
-      if (!threadsData.threads || threadsData.threads.length === 0) {
-        setConversations([]);
-        setEmails([]);
-        return;
-      }
-
-      // Process threads (limit to first 20 for faster processing)
-      const threadsToProcess = threadsData.threads.slice(0, 20);
-      const allEmails: EmailMessage[] = [];
-      
-      for (const thread of threadsToProcess) {
-        try {
-          // Fetch full thread details
-          const threadResponse = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/threads/${thread.id}`, {
+      const allMessages = [];
+      for (const query of searchQueries) {
+        const response = await fetch(
+          `https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${encodeURIComponent(query)}`,
+          {
             headers: {
               'Authorization': `Bearer ${emailAccount.access_token}`,
-              'Content-Type': 'application/json',
             },
-          });
+          }
+        );
 
-          if (!threadResponse.ok) continue;
-
-          const threadData = await threadResponse.json();
-          
-          if (!threadData.messages || threadData.messages.length === 0) continue;
-
-          // Process messages in this thread
-          const threadEmails = threadData.messages.map((message: any) => {
-            const headers = message.payload.headers;
-            const subjectHeader = headers.find((h: any) => h.name === 'Subject');
-            const fromHeader = headers.find((h: any) => h.name === 'From');
-            const toHeader = headers.find((h: any) => h.name === 'To');
-            const dateHeader = headers.find((h: any) => h.name === 'Date');
-
-            const subject = subjectHeader?.value || 'No Subject';
-            const sender = fromHeader?.value || 'Unknown Sender';
-            const recipient = toHeader?.value || '';
-            const receivedAt = dateHeader?.value ? new Date(dateHeader.value).toISOString() : new Date().toISOString();
-
-            // Extract email body
-            let body = '';
-            if (message.payload.body?.data) {
-              body = atob(message.payload.body.data.replace(/-/g, '+').replace(/_/g, '/'));
-            } else if (message.payload.parts) {
-              const textPart = message.payload.parts.find((part: any) => 
-                part.mimeType === 'text/plain' || part.mimeType === 'text/html'
-              );
-              if (textPart?.body?.data) {
-                body = atob(textPart.body.data.replace(/-/g, '+').replace(/_/g, '/'));
-              }
-            }
-
-            const cleanBody = cleanEmailBody(body);
-            
-            // Process with load matching
-            const emailContent = `${subject} ${cleanBody}`;
-            const loadMatch = loads.length > 0 ? getBestMatch(emailContent, subject) : null;
-            const loadNumber = loadMatch?.load?.load_number || extractLoadNumber(`${subject} ${cleanBody}`);
-
-            return {
-              id: message.id,
-              threadId: thread.id,
-              subject,
-              sender,
-              recipient,
-              body: cleanBody,
-              receivedAt,
-              loadNumber,
-              loadMatch
-            } as EmailMessage;
-          });
-
-          allEmails.push(...threadEmails);
-        } catch (error) {
-          console.warn(`Failed to process thread ${thread.id}:`, error);
-          continue;
+        if (response.ok) {
+          const data = await response.json();
+          if (data.messages) {
+            allMessages.push(...data.messages);
+          }
         }
       }
 
-      // Group emails into conversations
-      const conversationMap = new Map<string, EmailConversation>();
-      
-      allEmails.forEach(email => {
-        if (!conversationMap.has(email.threadId)) {
-          conversationMap.set(email.threadId, {
-            threadId: email.threadId,
-            subject: email.subject,
-            participants: [email.sender, email.recipient],
-            lastMessage: email,
-            messageCount: 1,
-            lastTime: new Date(email.receivedAt),
-            loadNumber: email.loadNumber,
-            loadMatch: email.loadMatch,
-            emails: [email]
-          });
-        } else {
-          const conversation = conversationMap.get(email.threadId)!;
-          if (!conversation.participants.includes(email.sender)) {
-            conversation.participants.push(email.sender);
+      // Get unique thread IDs
+      const uniqueThreadIds = [...new Set(allMessages.map(msg => msg.threadId))];
+
+      // Fetch full threads
+      const processedEmails = [];
+      for (const threadId of uniqueThreadIds) {
+        try {
+          const threadResponse = await fetch(
+            `https://gmail.googleapis.com/gmail/v1/users/me/threads/${threadId}`,
+            {
+              headers: {
+                'Authorization': `Bearer ${emailAccount.access_token}`,
+              },
+            }
+          );
+
+          if (threadResponse.ok) {
+            const threadData = await threadResponse.json();
+            for (const message of threadData.messages || []) {
+              const processedEmail = await processGmailMessage(message, currentLoads);
+              if (processedEmail) {
+                processedEmails.push(processedEmail);
+              }
+            }
           }
-          if (!conversation.participants.includes(email.recipient)) {
-            conversation.participants.push(email.recipient);
-          }
-          conversation.messageCount++;
-          const emailTime = new Date(email.receivedAt);
-          if (emailTime > conversation.lastTime) {
-            conversation.lastTime = emailTime;
-            conversation.lastMessage = email;
-          }
-          conversation.emails.push(email);
+        } catch (error) {
+          console.error(`Error fetching thread ${threadId}:`, error);
         }
-      });
+      }
 
-      // Convert to array and sort by last message time
-      const conversationList = Array.from(conversationMap.values())
-        .sort((a, b) => b.lastTime.getTime() - a.lastTime.getTime());
+      // Clear existing cache for this user
+      await supabase
+        .from('email_cache')
+        .delete()
+        .eq('user_id', user?.id);
 
-      setEmails(allEmails);
-      setConversations(conversationList);
+      // Insert new emails into cache
+      if (processedEmails.length > 0) {
+        const cacheInserts = processedEmails.map(email => ({
+          user_id: user?.id,
+          message_id: email.id,
+          thread_id: email.threadId,
+          subject: email.subject,
+          sender: email.sender,
+          recipient: email.recipient,
+          body: email.body,
+          received_at: email.receivedAt,
+          load_number: email.loadNumber,
+          load_match: email.loadMatch,
+          sync_status: 'synced',
+          created_by_user: false,
+          gmail_message_id: email.gmailMessageId
+        }));
 
+        await supabase
+          .from('email_cache')
+          .insert(cacheInserts);
+      }
+
+      // Reload from cache
+      await loadFromCache(days);
+
+    } catch (error) {
+      console.error('❌ Error in full sync:', error);
+      throw error;
+    }
+  }, [user?.id, emailTimeframe, processGmailMessage, loadFromCache]);
+
+  // Update main fetch function
+  const fetchEmails = useCallback(async (days: number = emailTimeframe) => {
+    if (!user?.id) return;
+
+    setLoading(true);
+    setError(null);
+
+    try {
+      // First try to load from cache
+      await loadFromCache(days);
+      
+      // If no emails in cache or cache is empty, perform full sync
+      if (emails.length === 0) {
+        await performFullSync(days);
+      }
+      
+      await syncPendingOperations();
     } catch (error: any) {
-      console.error('❌ Error fetching emails:', error);
       setError(error.message);
     } finally {
       setLoading(false);
     }
-  };
+  }, [user?.id, emailTimeframe, loadFromCache, performFullSync, syncPendingOperations, emails.length]);
 
-  const sendEmailReply = async (threadId: string, replyText: string) => {
-    try {
-      const { data: emailAccount, error: accountError } = await supabase
-        .from('email_accounts')
-        .select('access_token, email_address')
-        .eq('is_active', true)
-        .eq('provider', 'gmail')
-        .single();
-
-      if (accountError || !emailAccount) {
-        throw new Error('No connected Gmail account found');
-      }
-
-      // Get the original thread to reply to
-      const threadResponse = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/threads/${threadId}`, {
-        headers: {
-          'Authorization': `Bearer ${emailAccount.access_token}`,
-        },
-      });
-
-      if (!threadResponse.ok) {
-        throw new Error('Failed to get thread details');
-      }
-
-      const threadData = await threadResponse.json();
-      const originalMessage = threadData.messages[0];
-      const headers = originalMessage.payload.headers;
-      
-      const subjectHeader = headers.find((h: any) => h.name === 'Subject');
-      const toHeader = headers.find((h: any) => h.name === 'From');
-      
-      const subject = subjectHeader?.value || 'Re: No Subject';
-      const to = toHeader?.value || '';
-
-      // Create the reply message
-      const message = [
-        `To: ${to}`,
-        `Subject: ${subject.startsWith('Re:') ? subject : `Re: ${subject}`}`,
-        'Content-Type: text/plain; charset=utf-8',
-        '',
-        replyText
-      ].join('\n');
-
-      const encodedMessage = btoa(message).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-
-      // Send the reply
-      const sendResponse = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/send`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${emailAccount.access_token}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          raw: encodedMessage,
-          threadId: threadId
-        }),
-      });
-
-      if (!sendResponse.ok) {
-        const errorText = await sendResponse.text();
-        console.error('Gmail API Error:', {
-          status: sendResponse.status,
-          statusText: sendResponse.statusText,
-          error: errorText
-        });
-        throw new Error(`Failed to send reply: ${sendResponse.status} - ${errorText}`);
-      }
-
-      return true;
-    } catch (error) {
-      console.error('Error sending reply:', error);
-      throw error;
-    }
-  };
-
-  return {
+  // Memoized return object
+  return useMemo(() => ({
     emails,
     conversations,
     loading,
     error,
-    refetch: fetchEmails,
-    sendEmailReply
-  };
+    emailTimeframe,
+    setEmailTimeframe,
+    fetchEmails,
+    sendEmailReply: sendEmailReplyOptimistic,
+    refetch: fetchEmails
+  }), [emails, conversations, loading, error, emailTimeframe, fetchEmails, sendEmailReplyOptimistic]);
 };
